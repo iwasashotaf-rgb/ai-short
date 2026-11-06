@@ -4,6 +4,10 @@
                        クリップは元素材を参照するので、Premiere 上でカット点を前後に伸ばせる。
 - <名前>_captions.srt … 字幕。Premiere で読み込むとキャプショントラックになり、文言・時刻・書式を編集できる。
 - <名前>_title.srt    … 上部タイトル。字幕とは別のキャプショントラックにして位置と書式を分けられるようにする。
+
+タイムラインの2つの形に対応する:
+- A 収録音声型（timeline.py）: 素材1本。映像と音声は同じ素材から切り、リンクする
+- B 字コンテ型（timeline_b.py）: 素材が複数（tl["sources"]）。音声はナレーション（tl["audio"]）
 """
 from pathlib import Path
 from urllib.parse import quote
@@ -49,32 +53,35 @@ def _motion(scale, horiz=0.0, vert=0.0):
           </filter>"""
 
 
-def _file_block(tl, first):
-    s = tl["source"]
-    if not first:
-        return '<file id="file-1"/>'
-    total = int(round(s["duration"] * s["fps"]))
-    audio = ""
-    if s["audio_channels"]:
-        # audiochannel が無いと、Premiere は音声クリップを1本も読み込まない（2026-11-05 実機で確認）
-        chans = "".join(f"""
-                <audiochannel><sourcechannel>{k}</sourcechannel></audiochannel>"""
-                        for k in range(1, s["audio_channels"] + 1))
-        audio = f"""
-              <audio>
-                <samplecharacteristics>
-                  <depth>16</depth>
-                  <samplerate>{s['audio_rate']}</samplerate>
-                </samplecharacteristics>
-                <channelcount>{s['audio_channels']}</channelcount>{chans}
-              </audio>"""
-    return f"""<file id="file-1">
-            <name>{escape(Path(s['path']).name)}</name>
-            <pathurl>{escape(_pathurl(s['path']))}</pathurl>
-            {_rate(tl)}
-            <duration>{total}</duration>
-            <timecode>{_rate(tl)}<string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode>
-            <media>
+def _normalize(tl):
+    """A 型のタイムラインを、B 型と同じ「素材の一覧＋映像クリップ＋音声クリップ」の形にそろえる。"""
+    if "sources" in tl:
+        return tl["sources"], tl["clips"], tl["audio"]
+    cx = float(tl["reframe"].get("center_x", 0.5))
+    clips = [{**c, "src": 0, "center_x": cx} for c in tl["clips"]]
+    audio = []
+    if tl["source"]["audio_channels"]:
+        audio = [{"src": 0, "src_in": c["src_in"], "src_out": c["src_out"], "rec_in": c["rec_in"],
+                  "rec_out": c["rec_out"], "link": c["i"]} for c in tl["clips"]]
+    return [tl["source"]], clips, audio
+
+
+class _Files:
+    """素材ファイルの <file> 要素。2回目以降は id だけで参照する（xmeml の決まり）。"""
+
+    def __init__(self, tl, sources):
+        self.tl, self.sources, self.done = tl, sources, set()
+
+    def block(self, k):
+        fid = f"file-{k + 1}"
+        if k in self.done:
+            return f'<file id="{fid}"/>'
+        self.done.add(k)
+        s, tl = self.sources[k], self.tl
+        total = int(round(s["duration"] * tl["fps"]))
+        video = ""
+        if s.get("width"):
+            video = f"""
               <video>
                 <samplecharacteristics>
                   {_rate(tl)}
@@ -84,92 +91,120 @@ def _file_block(tl, first):
                   <pixelaspectratio>square</pixelaspectratio>
                   <fielddominance>none</fielddominance>
                 </samplecharacteristics>
-              </video>{audio}
+              </video>"""
+        audio = ""
+        if s["audio_channels"]:
+            # audiochannel が無いと、Premiere は音声クリップを1本も読み込まない（2026-11-05 実機で確認）
+            chans = "".join(f"""
+                <audiochannel><sourcechannel>{c}</sourcechannel></audiochannel>"""
+                            for c in range(1, s["audio_channels"] + 1))
+            audio = f"""
+              <audio>
+                <samplecharacteristics>
+                  <depth>16</depth>
+                  <samplerate>{s['audio_rate']}</samplerate>
+                </samplecharacteristics>
+                <channelcount>{s['audio_channels']}</channelcount>{chans}
+              </audio>"""
+        return f"""<file id="{fid}">
+            <name>{escape(Path(s['path']).name)}</name>
+            <pathurl>{escape(_pathurl(s['path']))}</pathurl>
+            {_rate(tl)}
+            <duration>{total}</duration>
+            <timecode>{_rate(tl)}<string>00:00:00:00</string><frame>0</frame><displayformat>NDF</displayformat></timecode>
+            <media>{video}{audio}
             </media>
           </file>"""
 
 
-def _layout(tl):
+def _layouts(tl, s, center_x):
     """リフレームを Premiere のモーション（スケールと位置）に置き換える。
 
     戻り値は映像トラックごとの (スケール%, 位置の横オフセット)。
     位置は xmeml の Center 値で、0 が画面中央。横方向の値はシーケンス幅に対する割合として書く。
     """
-    s = tl["source"]
     fill = max(tl["out_w"] / s["width"], tl["out_h"] / s["height"]) * 100
     if tl["reframe"]["mode"] == "crop":
-        cx = float(tl["reframe"].get("center_x", 0.5))
         scaled_w = s["width"] * fill / 100
-        # 切り抜き枠の中心を素材の cx の位置に合わせるための横移動量（ピクセル）
-        shift_px = (0.5 - cx) * (scaled_w - tl["out_w"])
+        # 切り抜き枠の中心を素材の center_x の位置に合わせるための横移動量（ピクセル）
+        shift_px = (0.5 - center_x) * (scaled_w - tl["out_w"])
         return [(fill, shift_px / tl["out_w"])]
     fit = tl["out_w"] / s["width"] * 100
     return [(fill, 0.0), (fit, 0.0)]  # V1: 背景（Premiere でぼかしを足す）/ V2: 全体
 
 
 def write_xml(tl, path, name):
-    s = tl["source"]
-    total_src = int(round(s["duration"] * s["fps"]))
-    layout = _layout(tl)
-    n = len(tl["clips"])
+    sources, clips, audio = _normalize(tl)
+    files = _Files(tl, sources)
+    n_vtracks = 1 if tl["reframe"]["mode"] == "crop" else 2
+    linked = {a["link"]: j for j, a in enumerate(audio) if a.get("link") is not None}
+
+    def src_frames(k):
+        return int(round(sources[k]["duration"] * tl["fps"]))
 
     vtracks = []
-    first = True
-    for ti, (scale, horiz) in enumerate(layout):
+    for ti in range(n_vtracks):
         items = []
-        for c in tl["clips"]:
-            vid = f"clipitem-v{ti + 1}-{c['i'] + 1}"
+        for ci, c in enumerate(clips):
+            s = sources[c["src"]]
+            scale, horiz = _layouts(tl, s, float(c.get("center_x", 0.5)))[ti]
+            vid = f"clipitem-v{ti + 1}-{ci + 1}"
             links = ""
-            if ti == 0:
+            if ti == 0 and c["i"] in linked:
+                j = linked[c["i"]]
                 links = f"""
-          <link><linkclipref>{vid}</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>{c['i'] + 1}</clipindex></link>"""
-                if s["audio_channels"]:
-                    links += f"""
-          <link><linkclipref>clipitem-a1-{c['i'] + 1}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>{c['i'] + 1}</clipindex></link>"""
+          <link><linkclipref>{vid}</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>{ci + 1}</clipindex></link>
+          <link><linkclipref>clipitem-a1-{j + 1}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>{j + 1}</clipindex></link>"""
             items.append(f"""
         <clipitem id="{vid}">
-          <masterclipid>masterclip-1</masterclipid>
+          <masterclipid>masterclip-{c['src'] + 1}</masterclipid>
           <name>{escape(Path(s['path']).name)}</name>
           <enabled>TRUE</enabled>
-          <duration>{total_src}</duration>
+          <duration>{src_frames(c['src'])}</duration>
           {_rate(tl)}
           <start>{c['rec_in']}</start>
           <end>{c['rec_out']}</end>
           <in>{c['src_in']}</in>
           <out>{c['src_out']}</out>
-          {_file_block(tl, first)}{_motion(scale, horiz)}{links}
+          {files.block(c['src'])}{_motion(scale, horiz)}{links}
         </clipitem>""")
-            first = False
         vtracks.append("<track>" + "".join(items) + "\n      </track>")
 
     atracks = ""
-    if s["audio_channels"]:
+    if audio:
         items = []
-        for c in tl["clips"]:
-            aid = f"clipitem-a1-{c['i'] + 1}"
+        for j, a in enumerate(audio):
+            s = sources[a["src"]]
+            aid = f"clipitem-a1-{j + 1}"
+            links = ""
+            if a.get("link") is not None:
+                ci = next(k for k, c in enumerate(clips) if c["i"] == a["link"])
+                links = f"""
+          <link><linkclipref>clipitem-v1-{ci + 1}</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>{ci + 1}</clipindex></link>
+          <link><linkclipref>{aid}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>{j + 1}</clipindex></link>"""
             items.append(f"""
         <clipitem id="{aid}" premiereChannelType="{'stereo' if s['audio_channels'] >= 2 else 'mono'}">
-          <masterclipid>masterclip-1</masterclipid>
+          <masterclipid>masterclip-{a['src'] + 1}</masterclipid>
           <name>{escape(Path(s['path']).name)}</name>
           <enabled>TRUE</enabled>
-          <duration>{total_src}</duration>
+          <duration>{src_frames(a['src'])}</duration>
           {_rate(tl)}
-          <start>{c['rec_in']}</start>
-          <end>{c['rec_out']}</end>
-          <in>{c['src_in']}</in>
-          <out>{c['src_out']}</out>
-          <file id="file-1"/>
-          <sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>
-          <link><linkclipref>clipitem-v1-{c['i'] + 1}</linkclipref><mediatype>video</mediatype><trackindex>1</trackindex><clipindex>{c['i'] + 1}</clipindex></link>
-          <link><linkclipref>{aid}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>{c['i'] + 1}</clipindex></link>
+          <start>{a['rec_in']}</start>
+          <end>{a['rec_out']}</end>
+          <in>{a['src_in']}</in>
+          <out>{a['src_out']}</out>
+          {files.block(a['src'])}
+          <sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>{links}
         </clipitem>""")
-        track_type = "Stereo" if s["audio_channels"] >= 2 else "Mono"
+        ch = sources[audio[0]["src"]]["audio_channels"]
+        track_type = "Stereo" if ch >= 2 else "Mono"
+        rate = sources[audio[0]["src"]]["audio_rate"]
         # トラックの属性（currentExplodedTrackIndex など）が無いと、Premiere 2026 は
         # 音声クリップを1本も読み込まない。Premiere 自身の書き出しから写した（2026-11-05 実機で確認）
         atracks = f"""
       <audio>
         <numOutputChannels>2</numOutputChannels>
-        <format><samplecharacteristics><depth>16</depth><samplerate>{s['audio_rate']}</samplerate></samplecharacteristics></format>
+        <format><samplecharacteristics><depth>16</depth><samplerate>{rate}</samplerate></samplecharacteristics></format>
         <outputs>
           <group><index>1</index><numchannels>1</numchannels><downmix>0</downmix><channel><index>1</index></channel></group>
           <group><index>2</index><numchannels>1</numchannels><downmix>0</downmix><channel><index>2</index></channel></group>
@@ -179,8 +214,10 @@ def write_xml(tl, path, name):
       </audio>"""
 
     markers = "".join(f"""
-    <marker><comment>{escape(c['text'][:120])}</comment><name>{escape(c['note'] or f'カット{c["i"] + 1}')}</name><in>{c['rec_in']}</in><out>-1</out></marker>"""
-                      for c in tl["clips"])
+    <marker><comment>{escape(m['comment'][:120])}</comment><name>{escape(m['name'])}</name><in>{m['rec_in']}</in><out>-1</out></marker>"""
+                      for m in tl.get("markers") or
+                      [{"comment": c["text"], "name": c["note"] or f"カット{c['i'] + 1}", "rec_in": c["rec_in"]}
+                       for c in tl["clips"]])
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE xmeml>
@@ -209,7 +246,7 @@ def write_xml(tl, path, name):
 </xmeml>
 """
     Path(path).write_text(xml, encoding="utf-8")
-    return n
+    return len(clips)
 
 
 def _srt_time(frames, fps):

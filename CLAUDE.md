@@ -142,6 +142,23 @@ ASBee の字コンテで依頼者が確認済みの読み方（2026-11-05）。�
 
 4. `narrate.py` でナレーションを作る。「要確認」の文は音声を聞いて確かめる。表記の揺れ（大ケガ／大怪我、コレ／これ）は一致とみなすので、残るのはブランド名や聞き取りにくい語が多い
 
+## B 字コンテ型: 素材を整理してショットを割り当てる
+
+見本は `projects/sakana/01/`（魚が焼けルンルン、2026-11-06 にテスト稼働。`projects/` は git に入れていない）。
+
+1. 字コンテが PowerPoint のときは `scripts/jikonte_pptx.py 字コンテ.pptx projects/案件名/jikonte` で読む（Google ドキュメントは `jikonte_parse.py`）。列はテキストボックスの横位置で「映像／ナレーション／テロップ」を判定する
+2. 台本（`script.json`）とカット表（`storyboard.json`）を書き、`narrate.py` でナレーションを作る（上の章と同じ）
+3. 素材の一覧画像を作る: `scripts/shots.py 素材フォルダ projects/案件名/shots --every 3 --max 12`
+4. 一覧画像（`shots/sheets/*.jpg`）を見て、`shots/shots.json` の各素材の `segments` に「何秒から何秒に何が映っているか・寄りか引きか・使えるか」を書く。素材が多いときはサブエージェントに任せ、字コンテの映像指示ごとの候補も報告させる
+5. 候補の時刻のコマを切り出して目で確かめ、`cutlist.json` に行ごとのショット（素材名・開始秒・必要なら dur と center_x）を書く。形式は `scripts/build_b.py` の先頭
+6. `scripts/build_b.py projects/案件名/01/cutlist.json --check` で長さと注意を確かめ、`--check` を外して書き出す
+7. プレビューから各カットのコマを切り出して並べ、映像指示に合っているか・テロップが収まっているかを見る
+8. `premiere_import.py projects/案件名/01/premiere` で Premiere に読み込む。映像はショット数、音声はナレーション1本になる
+
+注意:
+- iPhone の縦動画は横長（3840x2160）で記録され、回転の指示が付いている。`common.probe` は回転後の幅・高さを返す。これを横長のまま扱うと Premiere でのスケールがずれる
+- 行の長さはナレーションで決まる（その行の最初の文の開始 − `lead_sec` から、次の行まで）。素材の残りが足りないとエラーになる
+
 ## 出力の一覧
 
 ```

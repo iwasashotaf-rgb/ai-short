@@ -192,7 +192,7 @@ def main():
     for i, (ln, p) in enumerate(zip(script["lines"], raw_paths)):
         a, b = speech_bounds(p)
         trimmed.append((a, b))
-        timeline.append({"id": ln["id"], "text": ln["text"], "yomi": ln.get("yomi"),
+        timeline.append({"id": ln["id"], "row": ln.get("row"), "text": ln["text"], "yomi": ln.get("yomi"),
                          "start": round(t, 3), "end": round(t + (b - a), 3), "cache": p.name})
         t += b - a
         if i + 1 < len(script["lines"]):

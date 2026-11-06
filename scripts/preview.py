@@ -85,6 +85,10 @@ def render(tl, out_path, tmp_dir, burn=True):
     src = tl["source"]["path"]
     font_path = find_font()
 
+    if "sources" in tl:  # B 字コンテ型: 素材が複数、音声はナレーション
+        parts, inputs, has_audio = _multi_source_parts(tl)
+        return _finish(tl, parts, inputs, "vr", has_audio, out_path, tmp, font_path, burn)
+
     parts, labels = [], []
     has_audio = tl["source"]["audio_channels"] > 0
     for k, c in enumerate(tl["clips"]):
@@ -102,9 +106,40 @@ def render(tl, out_path, tmp_dir, burn=True):
     parts.append("".join(labels) + f"concat=n={n}:v=1:a={1 if has_audio else 0}"
                  + ("[vc][ac]" if has_audio else "[vc]"))
     parts.append(reframe_filter(tl, "vc", "vr"))
+    return _finish(tl, parts, ["-i", src], "vr", has_audio, out_path, tmp, font_path, burn)
 
-    inputs = ["-i", src]
-    last = "vr"
+
+def _multi_source_parts(tl):
+    """B 型: 素材ごとに入力を開き、クリップごとに切り出して 9:16 に切り抜いてからつなぐ。"""
+    w, h = tl["out_w"], tl["out_h"]
+    fps = f"{tl['source']['fps_num']}/{tl['source']['fps_den']}"
+    used = sorted({c["src"] for c in tl["clips"]})
+    idx = {k: n for n, k in enumerate(used)}
+    inputs = []
+    for k in used:
+        inputs += ["-i", tl["sources"][k]["path"]]
+    parts, labels = [], []
+    for j, c in enumerate(tl["clips"]):
+        cx = float(c.get("center_x", 0.5))
+        parts.append(f"[{idx[c['src']]}:v]trim=start_frame={c['src_in']}:end_frame={c['src_out']},"
+                     f"setpts=PTS-STARTPTS,scale=-2:{h},crop={w}:{h}:x='(iw-{w})*{cx}':y=0,"
+                     f"setsar=1,fps={fps}[v{j}]")
+        labels.append(f"[v{j}]")
+    parts.append("".join(labels) + f"concat=n={len(labels)}:v=1:a=0[vr]")
+    has_audio = bool(tl["audio"])
+    if has_audio:
+        a = tl["audio"][0]
+        inputs += ["-i", tl["sources"][a["src"]]["path"]]
+        n = len(used)
+        total = tl["total_frames"] / tl["fps"]
+        parts.append(f"[{n}:a]aresample=48000,apad,atrim=0:{total:.4f},asetpts=PTS-STARTPTS[ac]")
+    return parts, inputs, has_audio
+
+
+def _finish(tl, parts, inputs, last, has_audio, out_path, tmp, font_path, burn):
+    """字幕・タイトルの PNG を重ね、MP4 に書き出す（A 型・B 型で共通）。"""
+    inputs = list(inputs)
+    n_in = len([x for x in inputs if x == "-i"])
     overlays = []
     if burn and tl["title"]:
         p = tmp / "title.png"
@@ -119,7 +154,7 @@ def render(tl, out_path, tmp_dir, burn=True):
         inputs += ["-loop", "1", "-framerate", f"{tl['source']['fps_num']}/{tl['source']['fps_den']}",
                    "-i", str(p)]
         nxt = f"o{j}"
-        parts.append(f"[{last}][{j}:v]overlay=0:0:shortest=1:"
+        parts.append(f"[{last}][{n_in + j - 1}:v]overlay=0:0:shortest=1:"
                      f"enable='between(n,{f0},{f1 - 1})'[{nxt}]")
         last = nxt
 
