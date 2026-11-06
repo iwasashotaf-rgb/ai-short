@@ -21,6 +21,9 @@ script.json の形式:
   text      字幕に出す文面
   yomi      読み間違えるときだけ書く。音声合成にはこちらを送る
   gap_after この文の後の間を個別に変える
+  phrases   文をテロップ1行ぶんの句に分けたもの（例 ["焼く手間なしで", "この仕上がり"]）。
+            書くと、生成音声の文字起こしから句ごとの開始・終了時刻を割り出し、narration.json に入れる。
+            句ごとにカットを替え、テロップを出すとき（build_b.py の at / captions: "phrase"）に使う
 
 出力（script.json と同じフォルダ）:
   narration/narration.wav   つないだナレーション（48kHz）
@@ -140,16 +143,52 @@ def match_ratio(expected, yomi, heard):
 
 
 def verify(lines, wav_paths):
+    """生成音声を文字起こしし、台本との一致率と、語ごとの時刻（生成音声の先頭からの秒）を返す。"""
     import mlx_whisper
     results = []
     for ln, p in zip(lines, wav_paths):
         r = mlx_whisper.transcribe(str(p), path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
-                                   language="ja", condition_on_previous_text=False)
+                                   language="ja", condition_on_previous_text=False, word_timestamps=True)
         # initial_prompt に台本を渡すと、読み間違いを台本どおりに聞き取ってしまい検査にならない
         heard = r["text"].strip()
         ratio = match_ratio(ln["text"], ln.get("yomi"), heard)
-        results.append({"heard": heard, "match": round(ratio, 3), "ok": ratio >= VERIFY_THRESHOLD})
+        words = [{"text": w["word"].strip(), "start": w["start"], "end": w["end"]}
+                 for s in r["segments"] for w in s.get("words", []) if w["word"].strip()]
+        results.append({"heard": heard, "match": round(ratio, 3), "ok": ratio >= VERIFY_THRESHOLD,
+                        "words": words})
     return results
+
+
+def phrase_times(phrases, words, trim_start, line_start, line_end):
+    """1文の中の句（テロップ1行ぶん）の開始・終了を、文字起こしの語の時刻から割り出す。
+
+    句の境目を「読み（ひらがな）の文字数の割合」で決め、同じ割合の位置にある語の時刻を補間する。
+    表記が台本と違っても（漢字/かな）、読みの長さはほぼ同じになるのでずれにくい。
+    """
+    plen = [max(len(reading(normalize(p))), 1) for p in phrases]
+    total_p = sum(plen)
+    wl = [(max(len(reading(normalize(w["text"]))), 1), w["start"], w["end"]) for w in words]
+    total_w = sum(n for n, _, _ in wl)
+
+    def time_at(frac):
+        if not wl:
+            return line_start + frac * (line_end - line_start)
+        pos, acc = frac * total_w, 0
+        for n, s, e in wl:
+            if acc + n >= pos:
+                t = s + (e - s) * (pos - acc) / n
+                return min(max(line_start + (t - trim_start), line_start), line_end)
+            acc += n
+        return line_end
+
+    bounds = [line_start]
+    acc = 0
+    for n in plen[:-1]:
+        acc += n
+        bounds.append(time_at(acc / total_p))
+    bounds.append(line_end)
+    return [{"text": p, "start": round(bounds[i], 3), "end": round(bounds[i + 1], 3)}
+            for i, p in enumerate(phrases)]
 
 
 def main():
@@ -217,9 +256,17 @@ def main():
         print(r.stderr, file=sys.stderr)
         raise SystemExit("ナレーションの連結に失敗しました")
 
-    if not args.no_verify:
-        for item, v in zip(timeline, verify(script["lines"], raw_paths)):
-            item["verify"] = v
+    has_phrases = any(ln.get("phrases") for ln in script["lines"])
+    if not args.no_verify or has_phrases:
+        for ln, item, v, (a, _b) in zip(script["lines"], timeline, verify(script["lines"], raw_paths), trimmed):
+            words = v.pop("words")
+            if not args.no_verify:
+                item["verify"] = v
+            # 句（テロップ1行ぶん）の時刻。句の指定がなければ文全体を1句にする
+            phrases = ln.get("phrases") or [ln["text"]]
+            item["phrases"] = phrase_times(phrases, words, a, item["start"], item["end"])
+            for k, ph in enumerate(item["phrases"], start=1):
+                ph["id"] = f"{ln['id']}.{k}"
 
     save_json({"voice": voice, "duration": round(total, 3), "wav": str(wav.resolve()),
                "lines": timeline}, out / "narration.json")
@@ -230,6 +277,9 @@ def main():
         print(f"  {mark:4s} {item['id']} {item['start']:6.2f}-{item['end']:6.2f}  {item['text']}")
         if v and not v["ok"]:
             print(f"         聞こえた文: {v['heard']}（一致率 {v['match']:.2f}）")
+        if len(item.get("phrases", [])) > 1:
+            for ph in item["phrases"]:
+                print(f"         {ph['id']} {ph['start']:6.2f}-{ph['end']:6.2f}  {ph['text']}")
 
 
 if __name__ == "__main__":

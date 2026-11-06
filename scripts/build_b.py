@@ -19,6 +19,11 @@ cutlist.json の形式（Claude が書く。パスは cutlist.json からの相�
                              {"clip": "IMG_0022.MOV", "in": 3.5}]}
   ]
 }
+  - 各カットの始まりは "row"（字コンテの行 R01）か "at"（行 R01・文 L03・句 L03.2 のどれか）で指定する。
+    長さは、その位置のナレーションの開始から、次のカットの位置まで
+  - "captions": "phrase" にすると、テロップを句ごとに1枚出す（句は script.json の phrases）。
+    "telops": {"L03.2": "表示したい文面"} で句の文面を上書きできる。省略時は storyboard.json の行のテロップ
+  - "caption_style": {"center_y": 900, "size": 72} でプレビューのテロップの位置・大きさを変える
   - 各行の長さは、その行の最初のナレーションの開始から、次の行の最初のナレーションの開始まで
   - 1行に複数のショットを置くときは dur（秒）で長さを決める。dur のないショットは残りを等分する
   - center_x は 9:16 に切り抜く位置（0=左端、0.5=中央、1=右端）
@@ -59,9 +64,19 @@ def resolve(cl_path):
             r = {"row": ln.get("row"), "lines": []}
             rows.append(r)
         r["lines"].append(ln)
-    cut_rows = [c["row"] for c in cl["cuts"]]
-    if cut_rows != [r["row"] for r in rows]:
-        raise CutError(f"cuts の行 {cut_rows} がナレーションの行 {[r['row'] for r in rows]} と一致しません")
+    # カットの始まりに指定できる位置: 字コンテの行（R01）・文（L03）・句（L03.2）
+    anchors = {}
+    for r in rows:
+        anchors[r["row"]] = r["lines"][0]["start"]
+    for ln in lines:
+        anchors[ln["id"]] = ln["start"]
+        for ph in ln.get("phrases", []):
+            anchors[ph["id"]] = ph["start"]
+    row_of = {}
+    for ln in lines:
+        row_of[ln["id"]] = ln.get("row")
+        for ph in ln.get("phrases", []):
+            row_of[ph["id"]] = ln.get("row")
 
     # 映像の素材と、時間の基準（最初の素材のフレームレート）
     sources, src_idx = [], {}
@@ -81,20 +96,27 @@ def resolve(cl_path):
     total_sec = narr["duration"] + tail - 0.3  # narration.wav は末尾に0.3秒の余白を持つ
     total = int(round(total_sec * fps))
 
-    # 行の切り替え点（フレーム）
-    bounds = [0]
-    for r in rows[1:]:
-        bounds.append(int(round(max(r["lines"][0]["start"] - lead, 0) * fps)))
-    bounds.append(total)
+    def frame_at(sec):
+        return int(round(max(sec - lead, 0) * fps))
+
+    # カットの切り替え点（フレーム）
+    keys = [c.get("at") or c.get("row") for c in cl["cuts"]]
+    for k in keys:
+        if k not in anchors:
+            raise CutError(f"カットの位置 {k} がナレーションにありません（行 R.. / 文 L.. / 句 L...n）")
+    bounds = [0] + [frame_at(anchors[k]) for k in keys[1:]] + [total]
+    for a, b, k in zip(bounds, bounds[1:], keys):
+        if b <= a:
+            raise CutError(f"カット {k} の長さが0以下です（位置の順番を確かめる）")
 
     clips, markers, prev_key = [], [], None
-    for ri, (r, cut) in enumerate(zip(rows, cl["cuts"])):
-        r0, r1 = bounds[ri], bounds[ri + 1]
+    for ci, (key, cut) in enumerate(zip(keys, cl["cuts"])):
+        r0, r1 = bounds[ci], bounds[ci + 1]
         span = r1 - r0
         fixed = sum(int(round(s["dur"] * fps)) for s in cut["shots"] if s.get("dur"))
         free = [s for s in cut["shots"] if not s.get("dur")]
         if fixed > span:
-            raise CutError(f"{r['row']} の dur の合計（{fixed / fps:.2f}秒）が行の長さ（{span / fps:.2f}秒）を超えています")
+            raise CutError(f"{key} の dur の合計（{fixed / fps:.2f}秒）がカットの長さ（{span / fps:.2f}秒）を超えています")
         each = (span - fixed) // len(free) if free else 0
         rec = r0
         for k, s in enumerate(cut["shots"]):
@@ -106,44 +128,56 @@ def resolve(cl_path):
             src_in = int(round(float(s.get("in", 0)) * fps))
             src_out = src_in + n
             if src_out > int(info["duration"] * fps):
-                raise CutError(f"{r['row']} の {s['clip']}: in {s.get('in', 0)}秒 から {n / fps:.2f}秒 取ると"
+                raise CutError(f"{key} の {s['clip']}: in {s.get('in', 0)}秒 から {n / fps:.2f}秒 取ると"
                                f"素材の長さ（{info['duration']}秒）を超えます")
             if n < MIN_SHOT_SEC * fps:
-                warnings.append(f"{r['row']} の {s['clip']} が {n / fps:.2f}秒しかありません")
+                warnings.append(f"{key} の {s['clip']} が {n / fps:.2f}秒しかありません")
             seg = next((g for g in info.get("segments", [])
                         if g["start"] <= src_in / fps < g["end"]), None)
             if seg and seg.get("usable") is False:
-                warnings.append(f"{r['row']} の {s['clip']} {src_in / fps:.1f}秒 は使えない区間として記録されています: {seg.get('note', '')}")
-            key = (s["clip"], src_in)
-            if key == prev_key:
-                warnings.append(f"{r['row']} で同じショットが続いています: {s['clip']}")
-            prev_key = key
+                warnings.append(f"{key} の {s['clip']} {src_in / fps:.1f}秒 は使えない区間として記録されています: {seg.get('note', '')}")
+            if (s["clip"], src_in) == prev_key:
+                warnings.append(f"{key} で同じショットが続いています: {s['clip']}")
+            prev_key = (s["clip"], src_in + n)
             clips.append({"i": len(clips), "src": k_src, "src_in": src_in, "src_out": src_out,
                           "rec_in": rec, "rec_out": rec + n, "center_x": float(s.get("center_x", 0.5)),
                           "note": cut.get("note", ""), "text": f"{s['clip']} {src_in / fps:.1f}s"})
             rec += n
-        visual = next((c.get("visual", "") for c in sb["cuts"] if c["row"] == r["row"]), "")
-        markers.append({"rec_in": r0, "name": f"{r['row']} {cut.get('note', '')}".strip(),
-                        "comment": f"映像指示: {visual}"})
+        row = key if key in [r["row"] for r in rows] else row_of.get(key)
+        visual = next((c.get("visual", "") for c in sb["cuts"] if c["row"] == row), "")
+        markers.append({"rec_in": r0, "name": f"{key} {cut.get('note', '')}".strip(),
+                        "comment": f"字コンテ {row} の映像指示: {visual}"})
 
-    # 字幕: 行のテロップを、その行のナレーションの時刻に合わせる
     captions = []
-    for ri, r in enumerate(rows):
-        sbc = next((c for c in sb["cuts"] if c["row"] == r["row"]), {"telop": []})
-        telops = sbc.get("telop", [])
-        r0, r1 = bounds[ri], bounds[ri + 1]
-        if len(telops) == len(r["lines"]):
-            starts = [r0] + [int(round(max(ln["start"] - lead, 0) * fps)) for ln in r["lines"][1:]]
+    if cl.get("captions") == "phrase":
+        # 字幕: 句ごとに1枚。文面は telops で上書きできる（読みと表記を変えたいとき）
+        over = cl.get("telops", {})
+        phs = [ph for ln in lines for ph in (ln.get("phrases") or
+               [{"id": ln["id"], "text": ln["text"], "start": ln["start"]}])]
+        starts = [0] + [frame_at(ph["start"]) for ph in phs[1:]]
+        ends = starts[1:] + [total]
+        for ph, a, b in zip(phs, starts, ends):
+            t = over.get(ph["id"], ph["text"])
+            captions.append({"i": len(captions), "text": t, "rec_in": a, "rec_out": b, "id": ph["id"]})
+    else:
+        # 字幕: 字コンテの行のテロップを、その行のナレーションの時刻に合わせる
+        rb = [0] + [frame_at(r["lines"][0]["start"]) for r in rows[1:]] + [total]
+        for ri, r in enumerate(rows):
+            sbc = next((c for c in sb["cuts"] if c["row"] == r["row"]), {"telop": []})
+            telops = sbc.get("telop", [])
+            r0, r1 = rb[ri], rb[ri + 1]
+            if len(telops) == len(r["lines"]):
+                starts = [r0] + [frame_at(ln["start"]) for ln in r["lines"][1:]]
+            else:
+                step = (r1 - r0) / max(len(telops), 1)
+                starts = [r0 + int(step * i) for i in range(len(telops))]
             ends = starts[1:] + [r1]
-        else:
-            step = (r1 - r0) / max(len(telops), 1)
-            starts = [r0 + int(step * i) for i in range(len(telops))]
-            ends = starts[1:] + [r1]
-        for t, a, b in zip(telops, starts, ends):
-            captions.append({"i": len(captions), "text": t, "rec_in": a, "rec_out": b})
-            for ln in t.split("\n"):
-                if len(ln) > 13:
-                    warnings.append(f"{r['row']} のテロップの行「{ln}」が{len(ln)}文字です（目安13文字）")
+            for t, a, b in zip(telops, starts, ends):
+                captions.append({"i": len(captions), "text": t, "rec_in": a, "rec_out": b})
+    for c in captions:
+        for ln in c["text"].split("\n"):
+            if len(ln) > 13:
+                warnings.append(f"テロップの行「{ln}」が{len(ln)}文字です（目安13文字）")
 
     narr_info = probe_audio(narr["wav"])
     sources.append(narr_info)
@@ -154,7 +188,8 @@ def resolve(cl_path):
     return {"type": "B", "source": base_src, "fps": fps, "out_w": OUT_W, "out_h": OUT_H,
             "title": cl.get("title", ""), "reframe": {"mode": "crop", **cl.get("reframe", {})},
             "sources": sources, "clips": clips, "audio": audio, "captions": captions,
-            "markers": markers, "total_frames": total, "total_sec": round(total / fps, 3)}, warnings
+            "markers": markers, "total_frames": total, "total_sec": round(total / fps, 3),
+            "caption_style": cl.get("caption_style", {})}, warnings
 
 
 def probe_audio(path):

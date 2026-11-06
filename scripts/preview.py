@@ -148,7 +148,8 @@ def _finish(tl, parts, inputs, last, has_audio, out_path, tmp, font_path, burn):
     if burn:
         for cap in tl["captions"]:
             p = tmp / f"cap_{cap['i']:03d}.png"
-            draw_text_png(p, cap["text"], CAPTION_STYLE, tl["out_w"], tl["out_h"], font_path)
+            style = {**CAPTION_STYLE, **tl.get("caption_style", {})}
+            draw_text_png(p, cap["text"], style, tl["out_w"], tl["out_h"], font_path)
             overlays.append((p, cap["rec_in"], cap["rec_out"]))
     for j, (p, f0, f1) in enumerate(overlays, start=1):
         inputs += ["-loop", "1", "-framerate", f"{tl['source']['fps_num']}/{tl['source']['fps_den']}",
