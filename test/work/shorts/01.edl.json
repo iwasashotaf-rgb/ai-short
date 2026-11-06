@@ -1,0 +1,104 @@
+{
+  "title": "動画編集、AIに\nどこまで任せる？",
+  "target_sec": [
+    15,
+    60
+  ],
+  "reframe": {
+    "mode": "crop",
+    "center_x": 0.5
+  },
+  "pad": {
+    "head": 0.1,
+    "tail": 0.2
+  },
+  "clips": [
+    {
+      "from_word": 20,
+      "to_word": 39,
+      "note": "問題提起：外注は1本5万円"
+    },
+    {
+      "from_word": 40,
+      "to_word": 65,
+      "note": "AIなら30分"
+    },
+    {
+      "from_word": 76,
+      "to_word": 82,
+      "note": "ポイントは2つ（言い直し前を削除）"
+    },
+    {
+      "from_word": 83,
+      "to_word": 103,
+      "note": "1つ目：理解する間"
+    },
+    {
+      "from_word": 104,
+      "to_word": 122,
+      "note": "2つ目：意味で区切る"
+    },
+    {
+      "from_word": 123,
+      "to_word": 157,
+      "note": "結論"
+    }
+  ],
+  "captions": [
+    {
+      "from_word": 20,
+      "to_word": 27,
+      "text": "動画編集を外注すると"
+    },
+    {
+      "from_word": 28,
+      "to_word": 39,
+      "text": "1本あたり\n5万円ほどかかります"
+    },
+    {
+      "from_word": 40,
+      "to_word": 55,
+      "text": "でも 文字起こしと\nカットをAIに任せると"
+    },
+    {
+      "from_word": 56,
+      "to_word": 65,
+      "text": "この作業は\n30分で終わります"
+    },
+    {
+      "from_word": 76,
+      "to_word": 82,
+      "text": "ポイントは2つあります"
+    },
+    {
+      "from_word": 83,
+      "to_word": 94,
+      "text": "1つ目は\n無音を全部消さずに"
+    },
+    {
+      "from_word": 95,
+      "to_word": 103,
+      "text": "理解する間を残すこと"
+    },
+    {
+      "from_word": 104,
+      "to_word": 122,
+      "text": "2つ目は 字幕を\n意味のまとまりで区切る"
+    },
+    {
+      "from_word": 123,
+      "to_word": 139,
+      "text": "まとめると AIに\n任せるのは最初の下準備"
+    },
+    {
+      "from_word": 140,
+      "to_word": 148,
+      "text": "最後の確認は人がやる"
+    },
+    {
+      "from_word": 149,
+      "to_word": 157,
+      "text": "これが一番早いやり方です"
+    }
+  ]
+}

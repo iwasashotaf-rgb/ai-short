@@ -1,0 +1,19 @@
+# Python の環境（setup.sh で作り直す）
+.venv/
+__pycache__/
+
+# 案件のデータ（素材・生成物）はソフトのリポジトリに入れない
+projects/
+
+# 生成物（正本の JSON から作り直せる）
+**/_tmp/
+**/narration/
+test/work/shorts/*/
+test/work/xmlvariants/
+test/fish/
+test/narr/narration/
+.DS_Store
+
+# テスト素材（test/make_test_media.sh で作る）
+test/talk.mp4
+test/talk.aiff
