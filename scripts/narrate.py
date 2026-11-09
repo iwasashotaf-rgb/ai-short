@@ -196,6 +196,8 @@ def main():
     ap.add_argument("script")
     ap.add_argument("--check-only", action="store_true")
     ap.add_argument("--no-verify", action="store_true")
+    ap.add_argument("--estimate", type=float, metavar="かな毎秒", nargs="?", const=9.5,
+                    help="生成せずに、台本の読みの文字数から尺を見積もる（既定 毎秒9.5かな）")
     args = ap.parse_args()
 
     sp = Path(args.script)
@@ -203,6 +205,18 @@ def main():
     voice = script["voice"]
     gap = float(script.get("gap_sec", 0.35))
     lead = float(script.get("lead_in_sec", 0.2))
+
+    if args.estimate:
+        # 台本を書いた段階で尺を見積もる（API を呼ばない）。尺を決めるのは読みの文字数
+        total_kana, t = 0, lead
+        for i, ln in enumerate(script["lines"]):
+            k = len(reading(normalize(ln.get("yomi") or ln["text"])))
+            total_kana += k
+            sec = k / args.estimate
+            print(f"  {ln['id']} {k:3d}字 {sec:4.1f}秒  {ln['text']}")
+            t += sec + (float(ln.get("gap_after", gap)) if i + 1 < len(script["lines"]) else 0)
+        print(f"読み {total_kana}字 → 毎秒{args.estimate}かなで 約{t:.1f}秒")
+        return
     out = sp.parent / "narration"
     cache = out / "cache"
     cache.mkdir(parents=True, exist_ok=True)
