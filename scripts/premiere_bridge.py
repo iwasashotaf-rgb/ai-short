@@ -1,13 +1,18 @@
-"""Premiere Pro の拡張機能「MCP Bridge (CEP)」に ExtendScript を渡して実行させる。
+"""Premiere Pro の拡張機能「Feriest Premiere Bridge」（自社実装、ai.feriest.premiere.bridge）に
+ExtendScript を渡して実行させる。
 
-拡張機能の仕様（拡張機能の bridge-cep.js で確認、2026-11-06）:
-  - 共有フォルダ（既定 /tmp/premiere-mcp-bridge）に command-<id>.json を置くと、
-    パネルが 0.25 秒ごとに見つけて実行し、response-<id>.json を書く
+拡張機能の仕様（拡張機能の bridge.js で確認、2026-11-10）:
+  - 共有フォルダ（既定 ~/premiere-bridge。パネルの欄で変えられ、~/.feriest-premiere-bridge/config.json に保存される）に
+    command-<id>.json を置くと、パネルが 0.25 秒ごとに見つけて実行し、response-<id>.json を書く
   - command: {"id": str, "script": str, "timeoutMs": int}
-  - response: {"success": true, "result": ...} または {"success": false, "error": ...}
+  - response: {"success": true, "result": ...} または {"error": ...}
   - script に eval( / new Function( / require( / process. / __dirname / __filename /
-    child_process が含まれると、実行せずに "Script validation failed" を返す（コメント内でも）
-  - パネルで Start Bridge を押していないと応答しない
+    child_process が含まれると、実行せずに "forbidden tokens" を返す（コメント内でも）
+  - Premiere の「ウィンドウ > エクステンション > Feriest Premiere Bridge」を開き、Start Bridge を押していないと応答しない
+
+以前は VIDEO OPS（Bewibe）の付属素材「MCP Bridge (CEP)」（共有フォルダ /tmp/premiere-mcp-bridge）と通信していた。
+VIDEO OPS の利用期限（2026-11-15）の後も動くように、2026-11-10 に自社の拡張機能へ切り替えた。
+古い拡張機能に送りたいときだけ、環境変数 PR_BRIDGE_DIR=/tmp/premiere-mcp-bridge を付ける。
 
 使い方（他のスクリプトから）:
   from premiere_bridge import run_jsx
@@ -21,7 +26,7 @@ import time
 import uuid
 from pathlib import Path
 
-BRIDGE_DIR = Path(os.environ.get("PR_BRIDGE_DIR", "/tmp/premiere-mcp-bridge"))
+BRIDGE_DIR = Path(os.environ.get("PR_BRIDGE_DIR", str(Path.home() / "premiere-bridge")))
 BANNED = [r"eval\s*\(", r"\bnew\s+Function\s*\(", r"\brequire\s*\(", r"\b__dirname\b",
           r"\b__filename\b", r"\bprocess\.", r"\bchild_process\b"]
 
@@ -33,8 +38,8 @@ class BridgeError(Exception):
 def run_jsx(script, timeout_sec=120, wrap=True):
     """ExtendScript を実行し、拡張機能の応答（dict）を返す。応答がなければ BridgeError。"""
     if not BRIDGE_DIR.is_dir():
-        raise BridgeError(f"共有フォルダがありません: {BRIDGE_DIR}。Premiere の MCP Bridge (CEP) パネルで "
-                          "Save Configuration と Start Bridge を押してください")
+        raise BridgeError(f"共有フォルダがありません: {BRIDGE_DIR}。Premiere の「ウィンドウ > エクステンション > "
+                          "Feriest Premiere Bridge」を開き、Start Bridge を押してください")
     bad = [p for p in BANNED if re.search(p, script, re.I)]
     if bad:
         raise BridgeError(f"拡張機能が実行を拒否する語が含まれています: {bad}")
@@ -58,7 +63,8 @@ def run_jsx(script, timeout_sec=120, wrap=True):
             return data
         time.sleep(0.25)
     cmd.unlink(missing_ok=True)
-    raise BridgeError("Premiere から応答がありません。MCP Bridge (CEP) パネルで Start Bridge を押してください")
+    raise BridgeError("Premiere から応答がありません。「ウィンドウ > エクステンション > Feriest Premiere Bridge」を開き、"
+                      f"共有フォルダが {BRIDGE_DIR} になっていることを確かめて Start Bridge を押してください")
 
 
 def ping():

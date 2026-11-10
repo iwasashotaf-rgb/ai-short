@@ -72,7 +72,7 @@
 
 書き出し先 `shorts/01/premiere/` の3ファイルを使う。
 
-**自動で読み込む場合**（Premiere で `ウィンドウ > エクステンション > MCP Bridge (CEP)` を開き、Start Bridge を押してあること）:
+**自動で読み込む場合**（Premiere で `ウィンドウ > エクステンション > Feriest Premiere Bridge` を開き、共有フォルダが `~/premiere-bridge` になっていることを確かめて Start Bridge を押してあること）:
 
 ```bash
 .venv/bin/python scripts/premiere_import.py projects/案件名/shorts/01/premiere
@@ -97,12 +97,21 @@
 .venv/bin/python scripts/narrate.py projects/案件名/script.json
 ```
 
+- **CoeFont でも作れる**（`narrate.py` は Fish Audio と CoeFont のどちらでも読ませられる）。script.json の voice を `{"provider": "coefont", "coefont": "<声のID>", "speed": 1.0, "pitch": 0, "kuten": 0.1, "toten": 0.2}` にする。鍵は `~/.zshrc` の `COEFONT_ACCESS_KEY` と `COEFONT_ACCESS_SECRET`。使える声の一覧は `narrate.py --coefonts`。CoeFont は読みをひらがなで渡せるので、読み違えやすい文は `lines[].kana` にひらがなの読みを書く（`yomi` は Fish と共通の「読ませる文面」、`kana` は CoeFont 専用のひらがな）。`kuten`・`toten` は句点・読点の後の間（秒）で、手引き2-4の「文の中に0.3秒以上の無音を作らない」に合わせて小さくしている。CoeFont の声は声ごとに提供者がいて、商用で使えるかは CoeFont の利用規約と契約のプランで決まる（声を決めたら確かめる）
 - API キーは `~/.zshrc` の `FISH_API_KEY` から読む。API の残高が0のときは無料モデル `s2.1-pro-free` しか使えない（有料モデルを指定すると HTTP 402 が返る）
 - wav のサンプルレートは 44100 まで。生成後に 48kHz に変換してつなぐ
 - 生成した音声は `narration/cache/` に保存し、文面・声・設定が同じ文は API を呼ばずに再利用する。1文を直したときは、その文だけが生成し直される
 - 生成した音声を文字起こしして台本と比べ、一致率が0.92未満の文を「要確認」として表示する
 - **文字起こしでは漢字の読み違いを見分けられない**（「1日」を「ついたち」と読んでも「1日」と書き起こされる）。台本を書いた時点で、読みが複数ある語（1日・今日・辛い・生物・方・何人 など）と、英字・記号・単位を Claude が洗い出し、`yomi` に読み仮名を書く
-- 声ライブラリの声は、実在の人物や既存キャラクターに似せたものを使わない。商用利用の条件は声ごとに確認する
+- **使う声（Fish Audio）**。案件の字コンテや依頼者の指定がなければ、次から選ぶ。
+
+  | 声 | ID | 作者 | 使いどころ |
+  |---|---|---|---|
+  | じん Jin | `d738c70d206149e69f8e3b6fc8af9d96` | Fish Official | 温かく落ち着いた中年男性。速さ1.3から（2026-11-10 に依頼者が選んだ） |
+  | 元気な女性 | `5161d41404314212af1254556477c17d` | 一般の登録者 | 明るい若い女性。速さ1.4から。ASBee ①で了承済み。作者が公式ではないので、新しい案件では公式の声を優先する |
+
+- 声ライブラリの声は、実在の人物や既存キャラクターに似せたものを使わない。商用利用の条件は声ごとに確認する。声を選ぶときは `GET https://api.fish.audio/model/<ID>` で題名と作者を確かめ、作者が「Fish Official」の声を優先する。一般の人が登録した声には、他の製品の声や実在の人のまねが混じる（例: 「Holiday Twist」は TikTok の読み上げ機能の声「ホリデーツイスト」のまねで、使わない。2026-11-10）
+- **声のクローン**（`scripts/voice_clone.py`）: 参考動画から声のサンプルを切り出し（`prepare`）、聞いて確かめてから Fish Audio に非公開のモデルを作る（`create`）。script.json の voice に `"clone": "名前"` と書くと narrate.py がそのモデルで読む。**クローンしてよいのは、声の持ち主の許諾が取れている声と、依頼者が指定したフリー素材の動画の声だけ。** 依頼者が動画を指定したら、その言葉どおりに `--owner` と `--consent` を書いて `prepare` する（依頼者の方針、2026-11-10）。フリー素材は、ライセンスの条文で AI による合成・声の利用が禁じられていないことを確かめ、`--basis フリー素材 --license URL` を付ける。許諾のない第三者の声（他社の完成版のナレーター、タレント、配信者など）はクローンしない。クローン済みの声は `voice_clone.py list` で一覧できる。`prepare` は `--owner`（声の持ち主）と `--consent`（誰が・いつ・どの用途で認めたか）がないと止まり、記録は `voices/名前/voice.json` に残る（`voices/` は git に入れない）。BGM の大きい動画からは声だけを取り出せないので、BGM のない区間か元の収録を使う
 
 ## 字コンテから台本を作る
 
@@ -151,7 +160,9 @@ ASBee の字コンテで依頼者が確認済みの読み方（2026-11-05）。�
 ドンキの商品紹介ショートは、`guides/donki_short_guide.md`（編集の手引き）を先に読み、その原則で台本・カット・テロップを判断する。字コンテは意図として扱い、短尺で伝わる形に書き直してよい（変えてよい範囲は手引き2-2）。
 
 - 台本を書いたら、生成前に `.venv/bin/python scripts/narrate.py 台本 --estimate` で尺を見積もる（読みの文字数 ÷ 毎秒9.5かな）
-- 書き出したら `scripts/review.py` で検品材料を作り、**採点は別のエージェントに任せる**（作った本人の採点は甘くなる）。採点表は手引き4章
+- 生成は `narrate.py 台本 --tune` で行う。文ごとの話す速さが毎秒9〜10.5かなに入るまで、外れた文の speed を書き換えて自動で作り直す（同じ speed でも生成のたびに長さが変わるため）
+- 書き出したら `scripts/review.py` で検品材料を作る。最後に `scripts/check.py`（機械の検品）が走り、採点表の項目3・4・5・6・9を自動で採点する。**作る役は check.json の「必ず直す」が0件になるまで自分で直してから、採点役に渡す**
+- **採点は別のエージェントに1回だけ任せる**（作った本人の採点は甘くなる）。頼む文面は `guides/scoring_brief.md` をそのまま使う。採点役の「次に直すこと」（最大3件）と0点の項目だけを直し、check.py を通したら再び採点せずに Premiere に出す（採点と直しを3〜4回重ねて時間とトークンを使いすぎたため。ユーザーの指示、2026-11-10）
 - 評価用の動画（魚が焼けルンルンの人の完成版）は手引きの根拠に使わない。手引きを直すときも見ない
 - **作る役のサブエージェントは Sonnet で動かす**（Agent ツールの `model: "sonnet"`）。一覧画像を何十枚も読み、ナレーションを何度も作り直すので、1本あたり25万〜35万トークンを使う。採点役は既定のモデルのままにする（ユーザーの指示、2026-11-09）
 - 主役（食べ物・商品）が映るショットには、cutlist.json のショットに `"subject": [左, 上, 右, 下]`（素材の画面に対する割合）を書く。build_b.py が主役を画面の中央に置いて大きく寄せる倍率と位置を計算し、プレビューと Premiere の両方に反映する（Premiere ではスケールと位置）。範囲は `scripts/framegrid.py 素材 開始秒 長さ 出力.jpg` で作る目盛り付きのコマで読む。直接 `zoom`（1〜2）と `center_x` / `center_y`（0〜1）を書いてもよい（手引き2-6）
@@ -168,8 +179,9 @@ ASBee の字コンテで依頼者が確認済みの読み方（2026-11-05）。�
 4. 一覧画像（`shots/sheets/*.jpg`）を見て、`shots/shots.json` の各素材の `segments` に「何秒から何秒に何が映っているか・寄りか引きか・使えるか」を書く。素材が多いときはサブエージェントに任せ、字コンテの映像指示ごとの候補も報告させる
 5. 候補の時刻のコマを切り出して目で確かめ、`cutlist.json` に行ごとのショット（素材名・開始秒・必要なら dur と center_x）を書く。形式は `scripts/build_b.py` の先頭
 6. `scripts/build_b.py projects/案件名/01/cutlist.json --check` で長さと注意を確かめ、`--check` を外して書き出す
-7. プレビューから各カットのコマを切り出して並べ、映像指示に合っているか・テロップが収まっているかを見る
-8. `premiere_import.py projects/案件名/01/premiere` で Premiere に読み込む。映像はショット数、音声はナレーション1本になる
+7. `scripts/review.py projects/案件名/01` で検品材料と機械の検品（check.json）を作る。「必ず直す」が0件になるまで 5〜7 を繰り返す（この間は画像を読まない）
+8. 採点役に `guides/scoring_brief.md` の文面で1回だけ採点させ、「次に直すこと」だけを直して 7 を通す
+9. `premiere_import.py projects/案件名/01/premiere --name 案件名_01` で Premiere に読み込む（「AIショート」ビンの中に同じ名前のビンを作り、シーケンスにもその名前を付ける）。映像はショット数、音声はナレーション1本になる
 
 注意:
 - iPhone の縦動画は横長（3840x2160）で記録され、回転の指示が付いている。`common.probe` は回転後の幅・高さを返す。これを横長のまま扱うと Premiere でのスケールがずれる
@@ -201,5 +213,5 @@ projects/案件名/
 `~/video-ops` と、そこからリンクされたスキル（video-ops、short-video-pipeline、premiere-bridge-ops、audio-precision、reference-video-clone、script-from-footage、short-telop-craft、short-video-cut-craft、short-video-qc、video-revision-db-workflow、`_video-core`）、`~/video-ops-support` は株式会社Bewibe のライセンス製品。契約は更新しない（2026-11-06 決定。契約終了 11-12、利用期限 11-15）。
 
 - このパイプラインから VIDEO OPS のスクリプト・スキル・参照文書を呼ばない。中身を写さない（著作権は Bewibe、契約終了後は派生物も削除の対象）
-- Premiere との通信は自前の `scripts/premiere_bridge.py` を使う。ただし相手の拡張機能「MCP Bridge (CEP)」（`com.mcp.premiere.cepbridge`）は、VIDEO OPS の付属素材（`~/video-ops-support/donki-feriest/assets/MCPBridgeCEP`）として入ったものだった（2026-11-10 に確認）。利用期限の後は使えなくなる前提で、手動の読み込み（XML と SRT）か、自前の拡張機能に替える。引き継ぎ先には渡さない（`HANDOFF.md`）
+- Premiere との通信は自前の `scripts/premiere_bridge.py` と、自社の拡張機能「Feriest Premiere Bridge」（`ai.feriest.premiere.bridge`、`~/Library/Application Support/Adobe/CEP/extensions/FeriestPremiereBridge`、共有フォルダ `~/premiere-bridge`）を使う（2026-11-10 に切り替え）。以前使っていた「MCP Bridge (CEP)」（`com.mcp.premiere.cepbridge`）は VIDEO OPS の付属素材なので、使わない・引き継ぎ先に渡さない
 - 動作確認: `.venv/bin/python scripts/premiere_bridge.py` で「応答あり: <Premiereの版> / <プロジェクト名>」が出ればよい

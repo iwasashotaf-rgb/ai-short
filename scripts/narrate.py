@@ -5,12 +5,17 @@
 
   --check-only  生成済みの音声で読みの検査だけをやり直す（API を呼ばない）
   --no-verify   読みの検査を省く
+  --tune [回数]  文ごとの話す速さが毎秒9〜10.5かなに入るまで、外れた文の speed を変えて作り直す
 
 script.json の形式:
 {
   "voice": {"reference_id": "0089dce5fefb4c6ba9b9f2f0debe1ddc",  # Fish Audio の声のID
             "model": "s2.1-pro-free",                            # 有料: s2-pro / s2.1-pro
             "speed": 1.0},
+  # クローンした声を使うときは reference_id の代わりに "clone": "名前"（voice_clone.py で作った声）を書く
+  # CoeFont を使うときは "voice": {"provider": "coefont", "coefont": "<声のID>", "speed": 1.0, "pitch": 0,
+  #   "kuten": 0.1, "toten": 0.2}。鍵は ~/.zshrc の COEFONT_ACCESS_KEY / COEFONT_ACCESS_SECRET。
+  #   声の一覧は narrate.py --coefonts 。lines[].kana にひらがなの読みを書くと CoeFont にそのまま渡す
   "gap_sec": 0.35,                      # 文と文の間（秒）
   "lead_in_sec": 0.2,                   # 冒頭の無音
   "lines": [
@@ -56,24 +61,99 @@ BLIP_SEC = 0.06      # 頭と終わりの無音を測るとき、これより短
 VERIFY_THRESHOLD = 0.92  # 台本と文字起こしの一致率がこれ未満の文を「要確認」にする
 
 
-def api_key():
-    k = os.environ.get("FISH_API_KEY")
+def env_key(name):
+    k = os.environ.get(name)
     if not k:  # Claude Code のシェルは起動時の環境を使うので、後から ~/.zshrc に足したキーを読む
-        k = subprocess.run(["zsh", "-c", 'source ~/.zshrc >/dev/null 2>&1; printf %s "$FISH_API_KEY"'],
+        k = subprocess.run(["zsh", "-c", f'source ~/.zshrc >/dev/null 2>&1; printf %s "${name}"'],
                            capture_output=True, text=True).stdout.strip()
     if not k:
-        raise SystemExit("FISH_API_KEY が設定されていません（~/.zshrc に export してください）")
+        raise SystemExit(f"{name} が設定されていません（~/.zshrc に export してください）")
     return k
 
 
+def api_key(voice=None):
+    """voice の provider に合わせた鍵を返す。CoeFont はアクセスキーとアクセスシークレットの組。"""
+    if voice and voice.get("provider") == "coefont":
+        return (env_key("COEFONT_ACCESS_KEY"), env_key("COEFONT_ACCESS_SECRET"))
+    return env_key("FISH_API_KEY")
+
+
+COEFONT_URL = "https://api.coefont.cloud/v2"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def coefont_request(path, key, body=None, method="POST"):
+    """CoeFont API を呼ぶ。署名は HMAC-SHA256（アクセスシークレットで、UNIX 時刻＋JSON 本文を署名）。
+    text2speech は 302 で音声ファイルの URL を返すので、転送先は鍵を付けずに取りにいく。"""
+    import hmac
+    access, secret = key
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else b""
+    date = str(int(time.time()))
+    sig = hmac.new(secret.encode(), date.encode() + data, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(COEFONT_URL + path, data=data if body is not None else None, method=method,
+                                 headers={"Authorization": access, "X-Coefont-Date": date,
+                                          "X-Coefont-Content": sig, "Content-Type": "application/json"})
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(req, timeout=120) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 303, 307):
+            return e.code, e.headers, b""
+        raise
+
+
+def tts_coefont(text, voice, key, out_path, retries=3):
+    body = {"coefont": voice["coefont"], "text": text, "format": "wav",
+            "speed": voice.get("speed", 1.0), "pitch": voice.get("pitch", 0), "volume": voice.get("volume", 1.0),
+            "kuten": voice.get("kuten", 0.1), "toten": voice.get("toten", 0.2)}
+    if voice.get("_kana"):  # 読みをひらがなで渡せるときは渡す（漢字の読み違いを防ぐ）
+        body["yomi"] = voice["_kana"]
+    for attempt in range(retries):
+        try:
+            code, headers, _ = coefont_request("/text2speech", key, body)
+            loc = headers.get("Location")
+            if code not in (301, 302, 303, 307) or not loc:
+                raise SystemExit(f"CoeFont が音声の場所を返しませんでした（HTTP {code}）")
+            with urllib.request.urlopen(loc, timeout=120) as r:
+                out_path.write_bytes(r.read())
+            return
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode("utf-8", "replace")[:300]
+            if e.code in (429, 500, 502, 503) and attempt + 1 < retries:
+                time.sleep(3 * (attempt + 1))
+                continue
+            hint = {401: "（キーの誤りか、ポイントの残高不足）", 403: "（この声を使う権限がない）", 404: "（声の ID が見つからない）"}.get(e.code, "")
+            raise SystemExit(f"CoeFont がエラーを返しました（HTTP {e.code}）{hint}: {msg}")
+
+
+def list_coefonts(key):
+    code, _, data = coefont_request("/coefonts/pro", key, method="GET")
+    for c in json.loads(data):
+        print(f"{c.get('coefont')}  {c.get('name')}  {str(c.get('description') or '')[:50]}")
+
+
 def tts(text, voice, key, out_path, retries=3):
-    body = {"text": text, "reference_id": voice["reference_id"], "format": "wav",
-            "sample_rate": TTS_RATE, "normalize": True}
+    if voice.get("provider") == "coefont":
+        return tts_coefont(text, voice, key, out_path, retries)
+    body = {"text": text, "format": "wav", "sample_rate": TTS_RATE, "normalize": True}
     if voice.get("speed", 1.0) != 1.0 or voice.get("volume", 0) != 0:
         body["prosody"] = {"speed": voice.get("speed", 1.0), "volume": voice.get("volume", 0)}
-    req = urllib.request.Request(API_URL, data=json.dumps(body).encode("utf-8"), method="POST",
+    if voice.get("references"):
+        # その場でのクローン: 参考音声と文面を毎回送る（モデルを作らない。MessagePack でしか送れない）
+        import msgpack
+        body["references"] = [{"audio": Path(r["audio"]).read_bytes(), "text": r["text"]} for r in voice["references"]]
+        data, ctype = msgpack.packb(body), "application/msgpack"
+    else:
+        body["reference_id"] = voice["reference_id"]
+        data, ctype = json.dumps(body).encode("utf-8"), "application/json"
+    req = urllib.request.Request(API_URL, data=data, method="POST",
                                  headers={"Authorization": f"Bearer {key}",
-                                          "Content-Type": "application/json",
+                                          "Content-Type": ctype,
                                           "model": voice.get("model", "s2.1-pro-free")})
     for attempt in range(retries):
         try:
@@ -90,7 +170,12 @@ def tts(text, voice, key, out_path, retries=3):
 
 
 def cache_key(text, voice):
-    s = json.dumps([text, voice.get("reference_id"), voice.get("model", "s2.1-pro-free"),
+    if voice.get("provider") == "coefont":
+        s = json.dumps(["coefont", text, voice.get("_kana"), voice["coefont"], voice.get("speed", 1.0),
+                        voice.get("pitch", 0), voice.get("volume", 1.0), voice.get("kuten", 0.1),
+                        voice.get("toten", 0.2)], ensure_ascii=False)
+        return hashlib.sha1(s.encode("utf-8")).hexdigest()[:16]
+    s = json.dumps([text, voice.get("reference_id") or voice.get("clone_sig"), voice.get("model", "s2.1-pro-free"),
                     voice.get("speed", 1.0), voice.get("volume", 0)], ensure_ascii=False)
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:16]
 
@@ -228,6 +313,43 @@ def inner_pauses(path, trim_start, line_start, noise_db=-40, min_sec=0.15):
             for s, e in zip(starts, ends) if s > trim_start + 0.05]
 
 
+TUNE_LO, TUNE_HI, TUNE_TARGET = 9.0, 10.5, 9.75  # 手引き2-4: 文ごとに毎秒9〜10.5かな
+TUNE_PAUSE = 0.3  # 文の中の無音の上限（秒、-40dB）
+
+
+def tune(sp, rounds, no_verify=False):
+    """生成 → 文ごとの話す速さを測る → 範囲を外れた文だけ lines[].speed を書き換えて作り直す、を繰り返す。
+    同じ speed でも生成のたびに長さが変わるので、1回で決まらないことがある（手引き2-4）。"""
+    for rnd in range(rounds):
+        cmd = [sys.executable, str(Path(__file__)), str(sp)] + (["--no-verify"] if no_verify else [])
+        if subprocess.run(cmd).returncode:
+            raise SystemExit("ナレーションの生成に失敗しました")
+        script = load_json(sp)
+        narr = load_json(sp.parent / "narration" / "narration.json")
+        base = script["voice"].get("speed", 1.0)
+        # check.py（review.py）と同じ測り方にする: 書き出した音声を -40dB で無音検出し、文の頭と尾の無音を除いて測る
+        from review import measure_speech
+        m = measure_speech(Path(narr["wav"]), narr["lines"], -40)
+        changed = []
+        for ln, nl in zip(script["lines"], narr["lines"]):
+            rate = m["rates"][nl["id"]]
+            sp_now = ln.get("speed", base)
+            pause = m["inner_by_id"].get(nl["id"], 0)
+            if not TUNE_LO <= rate <= TUNE_HI:
+                ln["speed"] = round(min(max(sp_now * TUNE_TARGET / rate, 0.8), 2.0), 2)
+                changed.append(f"{ln['id']} 毎秒{rate:.1f}かな → speed {ln['speed']}")
+            elif pause >= TUNE_PAUSE:
+                # 文の中に0.3秒以上の無音（手引き2-4）。speed を 0.01 変えて生成し直す（同じ設定だとキャッシュが使われる）
+                ln["speed"] = round(sp_now + (0.01 if rate < TUNE_TARGET else -0.01), 2)
+                changed.append(f"{ln['id']} 文の中の無音 {pause:.2f}秒 → 生成し直す")
+        if not changed:
+            print(f"調整 {rnd + 1}回目: すべての文が毎秒{TUNE_LO}〜{TUNE_HI}かなに入り、文の中に{TUNE_PAUSE}秒以上の無音はありません")
+            return
+        print(f"調整 {rnd + 1}回目: 範囲外 " + "、".join(changed))
+        sp.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"{rounds}回で範囲に入らない文が残りました。script.json の speed は書き換え済みなので、もう一度 --tune を実行してください")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("script")
@@ -235,11 +357,21 @@ def main():
     ap.add_argument("--no-verify", action="store_true")
     ap.add_argument("--estimate", type=float, metavar="かな毎秒", nargs="?", const=9.5,
                     help="生成せずに、台本の読みの文字数から尺を見積もる（既定 毎秒9.5かな）")
+    ap.add_argument("--coefonts", action="store_true", help="CoeFont で使える声の一覧を表示する")
+    ap.add_argument("--tune", type=int, metavar="回数", nargs="?", const=5,
+                    help="文ごとの話す速さが毎秒9〜10.5かなに入るまで、外れた文の speed を変えて作り直す（既定 最大5回）")
     args = ap.parse_args()
+    if args.coefonts:
+        return list_coefonts(api_key({"provider": "coefont"}))
+    if args.tune:
+        return tune(Path(args.script), args.tune, args.no_verify)
 
     sp = Path(args.script)
     script = load_json(sp)
     voice = script["voice"]
+    if "clone" in voice:  # クローンした声（voices/<名前>/voice.json）の reference_id を使う
+        from voice_clone import resolve
+        voice = resolve(voice)
     gap = float(script.get("gap_sec", 0.35))
     lead = float(script.get("lead_in_sec", 0.2))
 
@@ -257,7 +389,7 @@ def main():
     out = sp.parent / "narration"
     cache = out / "cache"
     cache.mkdir(parents=True, exist_ok=True)
-    key = None if args.check_only else api_key()
+    key = None if args.check_only else api_key(voice)
 
     ids = [ln["id"] for ln in script["lines"]]
     if len(set(ids)) != len(ids):
@@ -267,6 +399,8 @@ def main():
     for ln in script["lines"]:
         say = ln.get("yomi") or ln["text"]
         v = {**voice, "speed": ln["speed"]} if "speed" in ln else voice  # 文ごとの速さ（任意）
+        if voice.get("provider") == "coefont" and ln.get("kana"):
+            v = {**v, "_kana": ln["kana"]}  # CoeFont は読みをひらがなで渡せる（lines[].kana）
         p = cache / f"{cache_key(say, v)}.wav"
         if not p.exists():
             if args.check_only:

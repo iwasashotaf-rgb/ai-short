@@ -6,8 +6,8 @@
 出力（同じフォルダ）:
   review.jpg   各カットの中ほどのコマを時刻付きで並べた画像（テロップ込み）
   review.json  数値: 尺・カット数・カットの長さ・テロップの枚数と文字数・話す速さ・声の間
-Claude は review.jpg と review.json を見て、編集の手引き（guides/）の採点表で採点し、直す点を cutlist.json と
-script.json に戻してから書き出し直す。
+  check.json   機械の検品（最後に check.py を自動で走らせる）。採点表の数値で判定できる項目の点と「必ず直す」
+作る役は check.py の「必ず直す」が0件になるまで直してから、採点役に渡す（CLAUDE.md の B 型の章）。
 """
 import argparse
 import json
@@ -42,7 +42,7 @@ def measure_speech(video, lines, noise_db, min_sec=0.05):
                        capture_output=True, text=True)
     sil = list(zip([float(x) for x in re.findall(r"silence_start: ([\d.]+)", r.stderr)],
                    [float(x) for x in re.findall(r"silence_end: ([\d.]+)", r.stderr)]))
-    spans, inner, rates = [], [], {}
+    spans, inner, rates, inner_by_id = [], [], {}, {}
     for ln in lines:
         s, e = ln["start"], ln["end"]
         for a, b in sil:
@@ -51,11 +51,13 @@ def measure_speech(video, lines, noise_db, min_sec=0.05):
             if a < e and b >= e - 0.06 and a > s:
                 e = a
         spans.append((s, e))
-        inner += [b - a for a, b in sil if s < a and b < e]
+        here = [b - a for a, b in sil if s < a and b < e]
+        inner += here
+        inner_by_id[ln["id"]] = max(here, default=0)
         k = len(reading(normalize(ln.get("yomi") or ln["text"])))
         rates[ln["id"]] = round(k / (e - s), 2) if e > s else 0
     gaps = [max(b[0] - a[1], 0) for a, b in zip(spans, spans[1:])]
-    return {"gaps": gaps, "inner": inner, "rates": rates}
+    return {"gaps": gaps, "inner": inner, "rates": rates, "inner_by_id": inner_by_id}
 
 
 def main():
@@ -140,6 +142,10 @@ def main():
     for k, v in stats.items():
         print(f"  {k}: {v}")
     print(f"  一覧画像: {out / 'review.jpg'}")
+    # 続けて機械の検品（check.py）を走らせる。「必ず直す」があれば終了コード 1
+    print(flush=True)
+    r = subprocess.run([sys.executable, str(Path(__file__).parent / "check.py"), str(out)])
+    sys.exit(r.returncode)
 
 
 if __name__ == "__main__":
