@@ -52,8 +52,13 @@ def main():
     pres = Presentation(sys.argv[1])
     rows, title, meta = [], "", {}
     last_no = 0
+    slide_w = pres.slide_width / EMU
     for sl in pres.slides:
         bs = boxes(sl)
+        # スライドの右の外に置かれた箱は、依頼者や監督の修正コメント。カットの中身に混ぜず comments に分ける
+        notes = [b for b in bs if b["x"] >= slide_w]
+        for b in notes:
+            bs.remove(b)
         for b in [b for b in bs if b["text"].startswith("※")]:  # 注記はカットの中身に混ぜない
             meta["注記"] = b["text"]
             bs.remove(b)
@@ -82,6 +87,7 @@ def main():
         for i, (no, y0) in enumerate(marks):
             y1 = marks[i + 1][1] if i + 1 < len(marks) else 99
             cell = {"visual": [], "narration": [], "telop": []}
+            comments = [b["text"] for b in notes if y0 - 0.1 <= b["y"] < y1 - 0.1]
             for b in bs:
                 if b in (na, te) or b["y"] < y0 - 0.1 or b["y"] >= y1 - 0.1:
                     continue
@@ -95,7 +101,8 @@ def main():
             rows.append({"row": f"R{no:02d}",
                          "visual": [x for ls in cell["visual"] for x in ls if x],
                          "narration": [x for ls in cell["narration"] for x in ls if x],
-                         "text": [x for ls in cell["telop"] for x in ls if x]})
+                         "text": [x for ls in cell["telop"] for x in ls if x],
+                         **({"comments": comments} if comments else {})})
         for b in bs:  # 表紙情報（タイトル・発注元・冒頭の型）
             if b["y"] < head_y and b not in (na, te):
                 if not title and b["x"] < 1 and "冒頭" not in b["text"]:
@@ -106,6 +113,8 @@ def main():
                     meta["発注元"] = b["text"]
                 elif b["text"].startswith("※"):
                     meta["注記"] = b["text"]
+                elif title and b["x"] < 1:
+                    meta.setdefault("その他", []).append(b["text"])  # ターゲットなど
     out = Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
     v = {"no": 1, "title": title, "meta": meta, "source": str(Path(sys.argv[1]).resolve()), "rows": rows}
@@ -114,6 +123,8 @@ def main():
     for r in rows:
         print(f"  {r['row']} 映像: {' '.join(r['visual'])}")
         print(f"       NA: {' '.join(r['narration'])} / テロップ: {' / '.join(r['text'])}")
+        for c in r.get("comments", []):
+            print(f"       コメント: {c}")
 
 
 if __name__ == "__main__":

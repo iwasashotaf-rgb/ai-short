@@ -27,6 +27,11 @@ cutlist.json の形式（Claude が書く。パスは cutlist.json からの相�
   - 各行の長さは、その行の最初のナレーションの開始から、次の行の最初のナレーションの開始まで
   - 1行に複数のショットを置くときは dur（秒）で長さを決める。dur のないショットは残りを等分する
   - center_x は 9:16 に切り抜く位置（0=左端、0.5=中央、1=右端）
+  - zoom は寄せの倍率（1=画面いっぱい、1.5=1.5倍に寄せる）。center_y は寄せたときの縦の位置（0=上端、0.5=中央、1=下端）。
+    4K の縦動画は 1080x1920 の2倍の大きさがあるので、zoom 2.0 までは画質が落ちない（超えると警告）
+  - subject は主役の範囲 [左, 上, 右, 下]（素材の画面に対する割合 0〜1、区間の中で動く範囲全体）。
+    zoom を書かずに subject を書くと、主役を画面の中央に置いて大きく寄せる zoom / center_x / center_y を計算する（framing.py）。
+    範囲は framegrid.py の目盛り付きのコマで読む
 
 出力（cutlist.json と同じフォルダ）:
   preview.mp4 / timeline.json / premiere/<名前>.xml・_captions.srt
@@ -39,6 +44,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from common import fmt_tc, load_json, probe, save_json  # noqa: E402
 
 OUT_W, OUT_H = 1080, 1920
+
+
+def lossless_zoom(sw, sh):
+    """画質を落とさずに寄せられる倍率の上限。画面を埋める縮小率の逆数（4K 縦なら2.0、4K 横なら1.125）。"""
+    if not sw or not sh:
+        return 2.0
+    return max(1.0, min(sw / OUT_W, sh / OUT_H))
 MIN_SHOT_SEC = 0.5
 
 
@@ -130,6 +142,21 @@ def resolve(cl_path):
             if src_out > int(info["duration"] * fps):
                 raise CutError(f"{key} の {s['clip']}: in {s.get('in', 0)}秒 から {n / fps:.2f}秒 取ると"
                                f"素材の長さ（{info['duration']}秒）を超えます")
+            if "subject" in s and "zoom" not in s:
+                # 被写体の範囲（framegrid.py で読む）から、寄せの倍率と位置を決める（framing.py）
+                from framing import frame_subject
+                sw, sh = sources[k_src]["width"], sources[k_src]["height"]
+                base_w = min(1.0, (OUT_W / OUT_H) / (sw / sh)) if sw and sh else 1.0
+                zmax = lossless_zoom(sw, sh)
+                try:
+                    s = {**s, **frame_subject(s["subject"], max(zmax, 1.0), base_w)}
+                except ValueError as e:
+                    raise CutError(f"{key} の {s['clip']}: {e}")
+            z = float(s.get("zoom", 1.0))
+            if z < 1.0:
+                raise CutError(f"{key} の {s['clip']}: zoom は1以上にしてください（{z}）")
+            if z > lossless_zoom(sources[k_src]["width"], sources[k_src]["height"]) + 0.01:
+                warnings.append(f"{key} の {s['clip']}: zoom {z} は素材の解像度を超えるので画質が落ちます")
             if n < MIN_SHOT_SEC * fps:
                 warnings.append(f"{key} の {s['clip']} が {n / fps:.2f}秒しかありません")
             seg = next((g for g in info.get("segments", [])
@@ -141,6 +168,7 @@ def resolve(cl_path):
             prev_key = (s["clip"], src_in + n)
             clips.append({"i": len(clips), "src": k_src, "src_in": src_in, "src_out": src_out,
                           "rec_in": rec, "rec_out": rec + n, "center_x": float(s.get("center_x", 0.5)),
+                          "zoom": float(s.get("zoom", 1.0)), "center_y": float(s.get("center_y", 0.5)),
                           "note": cut.get("note", ""), "text": f"{s['clip']} {src_in / fps:.1f}s"})
             rec += n
         row = key if key in [r["row"] for r in rows] else row_of.get(key)
@@ -233,7 +261,8 @@ def main():
         render(tl, out / "preview.mp4", out / "_tmp")
         print(f"  プレビュー: {out / 'preview.mp4'}")
     from premiere_export import export
-    for f in export(tl, out / "premiere", name):
+    # 同じ番号のシーケンスがプロジェクトに並んでも見分けられるよう、案件フォルダ名を前に付ける
+    for f in export(tl, out / "premiere", name, seq_name=f"{out.parent.name}_{name}"):
         print(f"  Premiere用: {f}")
 
 

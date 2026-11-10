@@ -117,20 +117,25 @@ class _Files:
           </file>"""
 
 
-def _layouts(tl, s, center_x):
+def _layouts(tl, s, center_x, zoom=1.0, center_y=0.5):
     """リフレームを Premiere のモーション（スケールと位置）に置き換える。
 
-    戻り値は映像トラックごとの (スケール%, 位置の横オフセット)。
-    位置は xmeml の Center 値で、0 が画面中央。横方向の値はシーケンス幅に対する割合として書く。
+    戻り値は映像トラックごとの (スケール%, 位置の横オフセット, 縦オフセット)。
+    位置は xmeml の Center 値で、0 が画面中央。
     """
     fill = max(tl["out_w"] / s["width"], tl["out_h"] / s["height"]) * 100
     if tl["reframe"]["mode"] == "crop":
+        fill *= zoom  # 寄せ（cutlist の zoom）
         scaled_w = s["width"] * fill / 100
-        # 切り抜き枠の中心を素材の center_x の位置に合わせるための横移動量（ピクセル）
+        scaled_h = s["height"] * fill / 100
+        # 切り抜き枠の中心を素材の center_x / center_y の位置に合わせるための移動量（ピクセル）
         shift_px = (0.5 - center_x) * (scaled_w - tl["out_w"])
-        return [(fill, shift_px / tl["out_w"])]
+        shift_py = (0.5 - center_y) * (scaled_h - tl["out_h"])
+        # Premiere 26 は xmeml の Center の値を2倍して読む。0.078 と書くと、位置が 0.5→0.656
+        # （画面の高さの15.6%）に動いた（2026-11-09 に確かめた）。そのため割合を2で割って書く。正の値は右・下
+        return [(fill, shift_px / tl["out_w"] / 2, shift_py / tl["out_h"] / 2)]
     fit = tl["out_w"] / s["width"] * 100
-    return [(fill, 0.0), (fit, 0.0)]  # V1: 背景（Premiere でぼかしを足す）/ V2: 全体
+    return [(fill, 0.0, 0.0), (fit, 0.0, 0.0)]  # V1: 背景（Premiere でぼかしを足す）/ V2: 全体
 
 
 def write_xml(tl, path, name):
@@ -147,7 +152,8 @@ def write_xml(tl, path, name):
         items = []
         for ci, c in enumerate(clips):
             s = sources[c["src"]]
-            scale, horiz = _layouts(tl, s, float(c.get("center_x", 0.5)))[ti]
+            scale, horiz, vert = _layouts(tl, s, float(c.get("center_x", 0.5)),
+                                          float(c.get("zoom", 1.0)), float(c.get("center_y", 0.5)))[ti]
             vid = f"clipitem-v{ti + 1}-{ci + 1}"
             links = ""
             if ti == 0 and c["i"] in linked:
@@ -166,7 +172,7 @@ def write_xml(tl, path, name):
           <end>{c['rec_out']}</end>
           <in>{c['src_in']}</in>
           <out>{c['src_out']}</out>
-          {files.block(c['src'])}{_motion(scale, horiz)}{links}
+          {files.block(c['src'])}{_motion(scale, horiz, vert)}{links}
         </clipitem>""")
         vtracks.append("<track>" + "".join(items) + "\n      </track>")
 
@@ -264,11 +270,12 @@ def write_srt(cues, fps, path):
     Path(path).write_text("\n".join(out), encoding="utf-8")
 
 
-def export(tl, out_dir, name):
+def export(tl, out_dir, name, seq_name=None):
+    """name はファイル名、seq_name は Premiere 上のシーケンス名（省略時は name）。"""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = [out / f"{name}.xml"]
-    write_xml(tl, files[0], name)
+    write_xml(tl, files[0], seq_name or name)
     if tl["captions"]:
         p = out / f"{name}_captions.srt"
         write_srt([(c["rec_in"], c["rec_out"], c["text"]) for c in tl["captions"]], tl["fps"], p)

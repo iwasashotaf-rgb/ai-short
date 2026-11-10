@@ -121,8 +121,10 @@ def _multi_source_parts(tl):
     parts, labels = [], []
     for j, c in enumerate(tl["clips"]):
         cx = float(c.get("center_x", 0.5))
+        cy = float(c.get("center_y", 0.5))
+        zh = int(round(h * float(c.get("zoom", 1.0)) / 2)) * 2  # 寄せ: 高さを zoom 倍にしてから切り抜く
         parts.append(f"[{idx[c['src']]}:v]trim=start_frame={c['src_in']}:end_frame={c['src_out']},"
-                     f"setpts=PTS-STARTPTS,scale=-2:{h},crop={w}:{h}:x='(iw-{w})*{cx}':y=0,"
+                     f"setpts=PTS-STARTPTS,scale=-2:{zh},crop={w}:{h}:x='(iw-{w})*{cx}':y='(ih-{h})*{cy}',"
                      f"setsar=1,fps={fps}[v{j}]")
         labels.append(f"[v{j}]")
     parts.append("".join(labels) + f"concat=n={len(labels)}:v=1:a=0[vr]")

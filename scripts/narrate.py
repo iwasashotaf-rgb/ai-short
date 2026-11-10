@@ -21,6 +21,7 @@ script.json の形式:
   text      字幕に出す文面
   yomi      読み間違えるときだけ書く。音声合成にはこちらを送る
   gap_after この文の後の間を個別に変える
+  speed     この文だけ速さを変える（voice.speed を上書き。1文だけ速く読まれたときに使う）
   phrases   文をテロップ1行ぶんの句に分けたもの（例 ["焼く手間なしで", "この仕上がり"]）。
             書くと、生成音声の文字起こしから句ごとの開始・終了時刻を割り出し、narration.json に入れる。
             句ごとにカットを替え、テロップを出すとき（build_b.py の at / captions: "phrase"）に使う
@@ -51,6 +52,7 @@ API_URL = "https://api.fish.audio/v1/tts"
 TTS_RATE = 44100      # Fish Audio の wav が受け付ける最大のサンプルレート
 OUT_RATE = 48000      # Premiere の映像用シーケンスに合わせる
 EDGE_KEEP = 0.04      # 生成音声の前後の無音を削ったあとに残す秒数
+BLIP_SEC = 0.06      # 頭と終わりの無音を測るとき、これより短い音（息・クリック）は無音として扱う
 VERIFY_THRESHOLD = 0.92  # 台本と文字起こしの一致率がこれ未満の文を「要確認」にする
 
 
@@ -102,6 +104,14 @@ def speech_bounds(path, noise_db=-40):
                                 "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout)
     starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", r.stderr)]
     ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", r.stderr)]
+    # 無音の間に挟まった短い雑音（息・クリック、BLIP_SEC 未満）は無音とみなしてつなぐ。
+    # つながないと、頭や終わりの無音が雑音の手前で切れて、文の間が設定より長くなる
+    i = 0
+    while i + 1 < len(starts) and i < len(ends):
+        if starts[i + 1] - ends[i] < BLIP_SEC:
+            del ends[i], starts[i + 1]
+        else:
+            i += 1
     head = ends[0] if starts and starts[0] <= 0.01 and ends else 0.0
     tail = starts[-1] if starts and (len(ends) < len(starts) or ends[-1] >= dur - 0.01) else dur
     return max(head - EDGE_KEEP, 0.0), min(tail + EDGE_KEEP, dur)
@@ -159,7 +169,7 @@ def verify(lines, wav_paths):
     return results
 
 
-def phrase_times(phrases, words, trim_start, line_start, line_end):
+def phrase_times(phrases, words, trim_start, line_start, line_end, pauses=None):
     """1文の中の句（テロップ1行ぶん）の開始・終了を、文字起こしの語の時刻から割り出す。
 
     句の境目を「読み（ひらがな）の文字数の割合」で決め、同じ割合の位置にある語の時刻を補間する。
@@ -187,8 +197,35 @@ def phrase_times(phrases, words, trim_start, line_start, line_end):
         acc += n
         bounds.append(time_at(acc / total_p))
     bounds.append(line_end)
+    # 読点などで文の中に間があると、文字数の割合で決めた境目が間の手前に来て、
+    # 次の句のテロップが声より先に出る。境目の近く（前後 PAUSE_SNAP 秒）に間があれば、間の終わり（声の出だし）に寄せる
+    # 1つの間は1つの境目にだけ使い、前後の境目（割合で決めた位置）を越える間は使わない
+    orig, used = list(bounds), set()
+    for i in range(1, len(bounds) - 1):
+        near = [(min(abs(orig[i] - s), abs(orig[i] - e)), k, e) for k, (s, e) in enumerate(pauses or [])
+                if k not in used and s - PAUSE_SNAP <= orig[i] <= e + PAUSE_SNAP
+                and s > orig[i - 1] and e < orig[i + 1]]
+        if near:
+            _, k, e = min(near)
+            used.add(k)
+            bounds[i] = min(max(e, bounds[i - 1]), bounds[i + 1])
     return [{"text": p, "start": round(bounds[i], 3), "end": round(bounds[i + 1], 3)}
             for i, p in enumerate(phrases)]
+
+
+PAUSE_SNAP = 0.25  # 句の境目を間に寄せる範囲（秒）
+
+
+def inner_pauses(path, trim_start, line_start, noise_db=-40, min_sec=0.15):
+    """生成音声の中の間（無音）を、ナレーション上の秒で返す。前後の無音は除く。
+    促音（「作った」「1分」の「っ」）の無音は長いと0.14秒になるので、min_sec（0.15秒）で外す。"""
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af",
+                        f"silencedetect=noise={noise_db}dB:d={min_sec}", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", r.stderr)]
+    ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", r.stderr)]
+    return [(line_start + s - trim_start, line_start + e - trim_start)
+            for s, e in zip(starts, ends) if s > trim_start + 0.05]
 
 
 def main():
@@ -229,12 +266,13 @@ def main():
     raw_paths, generated = [], 0
     for ln in script["lines"]:
         say = ln.get("yomi") or ln["text"]
-        p = cache / f"{cache_key(say, voice)}.wav"
+        v = {**voice, "speed": ln["speed"]} if "speed" in ln else voice  # 文ごとの速さ（任意）
+        p = cache / f"{cache_key(say, v)}.wav"
         if not p.exists():
             if args.check_only:
                 raise SystemExit(f"{ln['id']} の音声がまだありません（--check-only を外して生成してください）")
             print(f"  生成: {ln['id']} {say}", file=sys.stderr)
-            tts(say, voice, key, p)
+            tts(say, v, key, p)
             generated += 1
         raw_paths.append(p)
 
@@ -278,7 +316,8 @@ def main():
                 item["verify"] = v
             # 句（テロップ1行ぶん）の時刻。句の指定がなければ文全体を1句にする
             phrases = ln.get("phrases") or [ln["text"]]
-            item["phrases"] = phrase_times(phrases, words, a, item["start"], item["end"])
+            pauses = inner_pauses(cache / item["cache"], a, item["start"])
+            item["phrases"] = phrase_times(phrases, words, a, item["start"], item["end"], pauses)
             for k, ph in enumerate(item["phrases"], start=1):
                 ph["id"] = f"{ln['id']}.{k}"
 

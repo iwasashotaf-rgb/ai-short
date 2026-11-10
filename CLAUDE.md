@@ -142,6 +142,10 @@ ASBee の字コンテで依頼者が確認済みの読み方（2026-11-05）。�
 
 4. `narrate.py` でナレーションを作る。「要確認」の文は音声を聞いて確かめる。表記の揺れ（大ケガ／大怪我、コレ／これ）は一致とみなすので、残るのはブランド名や聞き取りにくい語が多い
 
+## 食品の動画: 主役の選び方と寄せ（案件共通）
+
+食品・料理・食品を扱う調理家電の動画では、型（A / B）や案件にかかわらず、`guides/food_sizzle.md` を読んでから主役のカットを選ぶ。美味しそうに見える条件（綺麗・ボリューム・大きく・中央）で候補を比べ、主役のショットに `subject` を書いて寄せる。寄せは今のところ B 型（`build_b.py`）だけが対応している。
+
 ## B 字コンテ型: 編集の判断は手引きに従う
 
 ドンキの商品紹介ショートは、`guides/donki_short_guide.md`（編集の手引き）を先に読み、その原則で台本・カット・テロップを判断する。字コンテは意図として扱い、短尺で伝わる形に書き直してよい（変えてよい範囲は手引き2-2）。
@@ -149,6 +153,10 @@ ASBee の字コンテで依頼者が確認済みの読み方（2026-11-05）。�
 - 台本を書いたら、生成前に `.venv/bin/python scripts/narrate.py 台本 --estimate` で尺を見積もる（読みの文字数 ÷ 毎秒9.5かな）
 - 書き出したら `scripts/review.py` で検品材料を作り、**採点は別のエージェントに任せる**（作った本人の採点は甘くなる）。採点表は手引き4章
 - 評価用の動画（魚が焼けルンルンの人の完成版）は手引きの根拠に使わない。手引きを直すときも見ない
+- **作る役のサブエージェントは Sonnet で動かす**（Agent ツールの `model: "sonnet"`）。一覧画像を何十枚も読み、ナレーションを何度も作り直すので、1本あたり25万〜35万トークンを使う。採点役は既定のモデルのままにする（ユーザーの指示、2026-11-09）
+- 主役（食べ物・商品）が映るショットには、cutlist.json のショットに `"subject": [左, 上, 右, 下]`（素材の画面に対する割合）を書く。build_b.py が主役を画面の中央に置いて大きく寄せる倍率と位置を計算し、プレビューと Premiere の両方に反映する（Premiere ではスケールと位置）。範囲は `scripts/framegrid.py 素材 開始秒 長さ 出力.jpg` で作る目盛り付きのコマで読む。直接 `zoom`（1〜2）と `center_x` / `center_y`（0〜1）を書いてもよい（手引き2-6）
+- プレビューのテロップは確認用。実運用では Premiere 上の見え方が大事で、テロップはキャプションのトラックスタイルで付ける（将来 MOGRT に替える可能性がある）。構図はテロップの位置に合わせない
+- 商品名が長いときは、主従の境目で改行した2行のテロップ1枚にする。script.json では商品名を1つの句にし、cutlist.json の `telops` に改行（`\n`）を入れて書く（手引き2-2）
 
 ## B 字コンテ型: 素材を整理してショットを割り当てる
 
@@ -156,7 +164,7 @@ ASBee の字コンテで依頼者が確認済みの読み方（2026-11-05）。�
 
 1. 字コンテが PowerPoint のときは `scripts/jikonte_pptx.py 字コンテ.pptx projects/案件名/jikonte` で読む（Google ドキュメントは `jikonte_parse.py`）。列はテキストボックスの横位置で「映像／ナレーション／テロップ」を判定する
 2. 台本（`script.json`）とカット表（`storyboard.json`）を書き、`narrate.py` でナレーションを作る（上の章と同じ）
-3. 素材の一覧画像を作る: `scripts/shots.py 素材フォルダ projects/案件名/shots --every 3 --max 12`
+3. 素材の一覧画像を作る: `scripts/shots.py 素材フォルダ projects/案件名/shots --every 3 --max 12`。あわせて `scripts/shake.py 素材フォルダ projects/案件名/shots/shake.json` で素材の手ブレを1秒ごとに測る（1.2%を超える秒は使わない。手引き2-5）
 4. 一覧画像（`shots/sheets/*.jpg`）を見て、`shots/shots.json` の各素材の `segments` に「何秒から何秒に何が映っているか・寄りか引きか・使えるか」を書く。素材が多いときはサブエージェントに任せ、字コンテの映像指示ごとの候補も報告させる
 5. 候補の時刻のコマを切り出して目で確かめ、`cutlist.json` に行ごとのショット（素材名・開始秒・必要なら dur と center_x）を書く。形式は `scripts/build_b.py` の先頭
 6. `scripts/build_b.py projects/案件名/01/cutlist.json --check` で長さと注意を確かめ、`--check` を外して書き出す
@@ -185,7 +193,7 @@ projects/案件名/
 ## 既知の制約
 
 - この環境の ffmpeg には字幕フィルタがないので、プレビューの字幕は Pillow で PNG に描いて重ねている。見た目は `scripts/preview.py` の `CAPTION_STYLE` と `TITLE_STYLE` で変える
-- XML のクロップ位置（`reframe.center_x` が 0.5 以外のとき）は、Premiere 上の位置の換算をまだ実機で確かめていない
+- XML の位置（Center）は、Premiere 26 が値を2倍して読む。縦の位置は実機で確かめた（2026-11-09、`premiere_export.py` の `_layouts`）。横の位置は同じ換算を使っているが、実機ではまだ確かめていない
 - デザインしたテロップ（色・部分強調・アニメーション）は SRT では渡せない。Premiere 上でキャプションにトラックスタイルを当てるか、「キャプションをグラフィックにアップグレード」して手で付ける
 
 ## VIDEO OPS（外部製品）を使わない
@@ -193,5 +201,5 @@ projects/案件名/
 `~/video-ops` と、そこからリンクされたスキル（video-ops、short-video-pipeline、premiere-bridge-ops、audio-precision、reference-video-clone、script-from-footage、short-telop-craft、short-video-cut-craft、short-video-qc、video-revision-db-workflow、`_video-core`）、`~/video-ops-support` は株式会社Bewibe のライセンス製品。契約は更新しない（2026-11-06 決定。契約終了 11-12、利用期限 11-15）。
 
 - このパイプラインから VIDEO OPS のスクリプト・スキル・参照文書を呼ばない。中身を写さない（著作権は Bewibe、契約終了後は派生物も削除の対象）
-- Premiere との通信は自前の `scripts/premiere_bridge.py` を使う。相手は Premiere の拡張機能「MCP Bridge (CEP)」で、VIDEO OPS とは別物
+- Premiere との通信は自前の `scripts/premiere_bridge.py` を使う。ただし相手の拡張機能「MCP Bridge (CEP)」（`com.mcp.premiere.cepbridge`）は、VIDEO OPS の付属素材（`~/video-ops-support/donki-feriest/assets/MCPBridgeCEP`）として入ったものだった（2026-11-10 に確認）。利用期限の後は使えなくなる前提で、手動の読み込み（XML と SRT）か、自前の拡張機能に替える。引き継ぎ先には渡さない（`HANDOFF.md`）
 - 動作確認: `.venv/bin/python scripts/premiere_bridge.py` で「応答あり: <Premiereの版> / <プロジェクト名>」が出ればよい

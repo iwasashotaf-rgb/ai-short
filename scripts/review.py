@@ -11,6 +11,7 @@ script.json に戻してから書き出し直す。
 """
 import argparse
 import json
+import re
 import statistics
 import subprocess
 import sys
@@ -31,6 +32,30 @@ def grab(video, t, w=240):
                         "-frames:v", "1", "-vf", f"scale={w}:-2", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
                        capture_output=True)
     return Image.open(BytesIO(r.stdout)).convert("RGB")
+
+
+def measure_speech(video, lines, noise_db, min_sec=0.05):
+    """プレビューの音声を silencedetect で測り、文の間・文の中の間・文ごとの話す速さ（かな文字毎秒）を返す。
+    文の声の区間は、narration.json の文の開始・終了に重なる無音を除いた範囲。"""
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(video), "-af",
+                        f"silencedetect=noise={noise_db}dB:d={min_sec}", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    sil = list(zip([float(x) for x in re.findall(r"silence_start: ([\d.]+)", r.stderr)],
+                   [float(x) for x in re.findall(r"silence_end: ([\d.]+)", r.stderr)]))
+    spans, inner, rates = [], [], {}
+    for ln in lines:
+        s, e = ln["start"], ln["end"]
+        for a, b in sil:
+            if a <= s + 0.06 and b > s:
+                s = b
+            if a < e and b >= e - 0.06 and a > s:
+                e = a
+        spans.append((s, e))
+        inner += [b - a for a, b in sil if s < a and b < e]
+        k = len(reading(normalize(ln.get("yomi") or ln["text"])))
+        rates[ln["id"]] = round(k / (e - s), 2) if e > s else 0
+    gaps = [max(b[0] - a[1], 0) for a, b in zip(spans, spans[1:])]
+    return {"gaps": gaps, "inner": inner, "rates": rates}
 
 
 def main():
@@ -67,10 +92,28 @@ def main():
         stats.update({
             "声の開始_秒": round(ls[0]["start"], 2),
             "話す速さ_かな文字毎秒": round(mora / speech, 1) if speech else 0,
-            "文の間_平均": round(statistics.mean(gaps), 2) if gaps else 0,
-            "文の間_最長": round(max(gaps), 2) if gaps else 0,
+            "文の間_設定値_平均": round(statistics.mean(gaps), 2) if gaps else 0,
+            "文の間_設定値_最長": round(max(gaps), 2) if gaps else 0,
             "声のない時間の割合": round(1 - speech / tl["total_sec"], 2),
         })
+        # 設定値の文の間には、生成音声の頭と尾に残した無音が入らない。プレビューの音声を実測する
+        for db in (-40, -35):
+            m = measure_speech(out / "preview.mp4", ls, db)
+            stats[f"文の間_実測_最長_{db}dB"] = round(max(m["gaps"]), 3) if m["gaps"] else 0
+            stats[f"文の中の間_実測_最長_{db}dB"] = round(max(m["inner"]), 3) if m["inner"] else 0
+            stats[f"話す速さ_文ごと_実測_{db}dB"] = m["rates"]
+
+    # 各カットの手ブレ量（素材の使った区間を測る）。SHAKE_NG を超えるカットは採用しない
+    from shake import measure as shake_measure, label as shake_label, SHAKE_NG
+    srcs = tl.get("sources") or [tl["source"]]
+    shakes = []
+    for c in clips:
+        src = srcs[c.get("src", 0)]  # src_in / src_out はタイムラインの fps のコマ数（build_b.py）
+        shakes.append(shake_measure(src["path"], c["src_in"] / fps, (c["src_out"] - c["src_in"]) / fps))
+    stats["手ブレ_カットごと_%"] = {f"#{i + 1}": v for i, v in enumerate(shakes)}
+    stats["手ブレ_最大_%"] = max(shakes) if shakes else 0
+    stats["手ブレ_採用しない基準_%"] = SHAKE_NG
+    stats["手ブレ_基準超えのカット"] = [f"#{i + 1}" for i, v in enumerate(shakes) if v > SHAKE_NG]
 
     # 各カットの中ほどのコマ
     font = ImageFont.truetype(FONT, 15)
@@ -82,6 +125,9 @@ def main():
         d.rectangle([0, 0, im.width, 22], fill=(0, 0, 0))
         d.text((4, 2), f"#{i + 1} {c['rec_in'] / fps:.1f}-{c['rec_out'] / fps:.1f}s {c['text'][:16]}",
                font=font, fill=(255, 220, 0))
+        if shakes[i] > SHAKE_NG:  # 手ブレが基準を超えるカットは赤枠で示す
+            d.rectangle([0, 0, im.width - 1, im.height - 1], outline=(255, 40, 40), width=6)
+            d.text((4, 24), f"手ブレ {shakes[i]}%", font=font, fill=(255, 60, 60))
         tiles.append(im)
     cols = min(6, len(tiles))
     w, h = tiles[0].size
