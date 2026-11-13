@@ -5,9 +5,11 @@
 - <名前>_captions.srt … 字幕。Premiere で読み込むとキャプショントラックになり、文言・時刻・書式を編集できる。
 - <名前>_title.srt    … 上部タイトル。字幕とは別のキャプショントラックにして位置と書式を分けられるようにする。
 
-タイムラインの2つの形に対応する:
+タイムラインの3つの形に対応する:
 - A 収録音声型（timeline.py）: 素材1本。映像と音声は同じ素材から切り、リンクする
-- B 字コンテ型（timeline_b.py）: 素材が複数（tl["sources"]）。音声はナレーション（tl["audio"]）
+- B 字コンテ型（build_b.py）: 素材が複数（tl["sources"]）。音声はナレーション（tl["audio"]）
+- C インタビュー型（timeline_c.py）: 素材が複数。音声は収録した話し声で、カットごとに1本。
+  インサートで映像だけ差し替えたカットは、映像と音声をリンクしない
 """
 from pathlib import Path
 from urllib.parse import quote
@@ -280,8 +282,12 @@ def export(tl, out_dir, name, seq_name=None):
         p = out / f"{name}_captions.srt"
         write_srt([(c["rec_in"], c["rec_out"], c["text"]) for c in tl["captions"]], tl["fps"], p)
         files.append(p)
-    if tl["title"]:
+    # 上部テロップ: C 型は質問ごと（tl["titles"]）、A・B 型は全編に出す1枚（tl["title"]）
+    titles = [(t["rec_in"], t["rec_out"], t["text"]) for t in (tl.get("titles") or [])]
+    if not titles and tl["title"]:
+        titles = [(0, tl["total_frames"], tl["title"])]
+    if titles:
         p = out / f"{name}_title.srt"
-        write_srt([(0, tl["total_frames"], tl["title"])], tl["fps"], p)
+        write_srt(titles, tl["fps"], p)
         files.append(p)
     return files

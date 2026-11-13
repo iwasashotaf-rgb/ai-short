@@ -16,8 +16,9 @@ Fish Audio の API キーを `~/.zshrc` に `export FISH_API_KEY="..."` で書�
 ## 読む順番
 
 1. [HANDOFF.md](HANDOFF.md) — 導入、Premiere への読み込み、運用の決まり、道具の一覧
-2. [CLAUDE.md](CLAUDE.md) — Claude Code が読む手順書。A 型（話している素材から切り出す）と B 型（字コンテから作る）の手順
-3. [guides/donki_short_guide.md](guides/donki_short_guide.md) — 編集の判断の基準と採点表
+2. [CLAUDE.md](CLAUDE.md) — Claude Code が読む手順書。A 型（話している素材から切り出す）・B 型（字コンテから作る）・C 型（インタビューを切る）の手順
+3. [guides/donki_short_guide.md](guides/donki_short_guide.md) — 編集の判断の基準と採点表（B 型）
+4. [guides/interview_guide.md](guides/interview_guide.md) — インタビューの編集の判断の基準（C 型）
 
 ## リポジトリに入れないもの
 
@@ -32,4 +33,4 @@ Fish Audio の API キーを `~/.zshrc` に `export FISH_API_KEY="..."` で書�
 
 ## 変更するとき
 
-スクリプトを直したら、テスト素材で通して結果が変わらないことを確かめる（手順は CLAUDE.md の「3. 検証してから書き出す」）。テスト素材は `./test/make_test_media.sh` で作る。
+スクリプトを直したら、テスト素材で通して結果が変わらないことを確かめる（手順は CLAUDE.md の「3. 検証してから書き出す」）。テスト素材は `./test/make_test_media.sh`（A 型）と `./test/make_interview_media.sh`（C 型）で作る。

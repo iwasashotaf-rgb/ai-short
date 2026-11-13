@@ -85,6 +85,9 @@ def render(tl, out_path, tmp_dir, burn=True):
     src = tl["source"]["path"]
     font_path = find_font()
 
+    if tl.get("type") == "C":  # C インタビュー型: 素材が複数、音声は収録した話し声
+        parts, inputs, has_audio = _sync_source_parts(tl)
+        return _finish(tl, parts, inputs, "vr", has_audio, out_path, tmp, font_path, burn)
     if "sources" in tl:  # B 字コンテ型: 素材が複数、音声はナレーション
         parts, inputs, has_audio = _multi_source_parts(tl)
         return _finish(tl, parts, inputs, "vr", has_audio, out_path, tmp, font_path, burn)
@@ -109,15 +112,10 @@ def render(tl, out_path, tmp_dir, burn=True):
     return _finish(tl, parts, ["-i", src], "vr", has_audio, out_path, tmp, font_path, burn)
 
 
-def _multi_source_parts(tl):
-    """B 型: 素材ごとに入力を開き、クリップごとに切り出して 9:16 に切り抜いてからつなぐ。"""
+def _video_parts(tl, idx):
+    """素材ごとに開いた入力（idx）から、クリップを切り出して 9:16 に切り抜いてつなぐ。"""
     w, h = tl["out_w"], tl["out_h"]
     fps = f"{tl['source']['fps_num']}/{tl['source']['fps_den']}"
-    used = sorted({c["src"] for c in tl["clips"]})
-    idx = {k: n for n, k in enumerate(used)}
-    inputs = []
-    for k in used:
-        inputs += ["-i", tl["sources"][k]["path"]]
     parts, labels = [], []
     for j, c in enumerate(tl["clips"]):
         cx = float(c.get("center_x", 0.5))
@@ -128,6 +126,44 @@ def _multi_source_parts(tl):
                      f"setsar=1,fps={fps}[v{j}]")
         labels.append(f"[v{j}]")
     parts.append("".join(labels) + f"concat=n={len(labels)}:v=1:a=0[vr]")
+    return parts
+
+
+def _open(tl, keys):
+    inputs = []
+    idx = {}
+    for k in keys:
+        idx[k] = len(idx)
+        inputs += ["-i", tl["sources"][k]["path"]]
+    return idx, inputs
+
+
+def _sync_source_parts(tl):
+    """C 型: 映像はカットごと（インサートを含む）、音声はカットの区間をそのまま使う。"""
+    used = sorted({c["src"] for c in tl["clips"]} | {a["src"] for a in tl["audio"]})
+    idx, inputs = _open(tl, used)
+    parts = _video_parts(tl, idx)
+    has_audio = bool(tl["audio"]) and tl["sources"][tl["audio"][0]["src"]]["audio_channels"] > 0
+    if has_audio:
+        labels = []
+        for j, a in enumerate(tl["audio"]):
+            fps = tl["fps"]
+            t0, t1 = a["src_in"] / fps, a["src_out"] / fps
+            d = t1 - t0
+            # カット点のプチッという音を防ぐため、前後10msだけフェードする
+            parts.append(f"[{idx[a['src']]}:a]atrim=start={t0:.6f}:end={t1:.6f},asetpts=PTS-STARTPTS,"
+                         f"aresample=48000,afade=t=in:d=0.01,"
+                         f"afade=t=out:st={max(d - 0.01, 0):.6f}:d=0.01[a{j}]")
+            labels.append(f"[a{j}]")
+        parts.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1[ac]")
+    return parts, inputs, has_audio
+
+
+def _multi_source_parts(tl):
+    """B 型: 素材ごとに入力を開き、クリップごとに切り出して 9:16 に切り抜いてからつなぐ。"""
+    used = sorted({c["src"] for c in tl["clips"]})
+    idx, inputs = _open(tl, used)
+    parts = _video_parts(tl, idx)
     has_audio = bool(tl["audio"])
     if has_audio:
         a = tl["audio"][0]
@@ -143,10 +179,15 @@ def _finish(tl, parts, inputs, last, has_audio, out_path, tmp, font_path, burn):
     inputs = list(inputs)
     n_in = len([x for x in inputs if x == "-i"])
     overlays = []
-    if burn and tl["title"]:
-        p = tmp / "title.png"
-        draw_text_png(p, tl["title"], TITLE_STYLE, tl["out_w"], tl["out_h"], font_path, boxed=True)
-        overlays.append((p, 0, tl["total_frames"]))
+    if burn:
+        # tl["titles"] があれば時間帯ごとに（C 型の質問テロップ）、なければ tl["title"] を全編に出す
+        titles = list(tl.get("titles") or [])
+        if not titles and tl["title"]:
+            titles = [{"text": tl["title"], "rec_in": 0, "rec_out": tl["total_frames"]}]
+        for i, t in enumerate(titles):
+            p = tmp / f"title_{i:03d}.png"
+            draw_text_png(p, t["text"], TITLE_STYLE, tl["out_w"], tl["out_h"], font_path, boxed=True)
+            overlays.append((p, t["rec_in"], t["rec_out"]))
     if burn:
         for cap in tl["captions"]:
             p = tmp / f"cap_{cap['i']:03d}.png"

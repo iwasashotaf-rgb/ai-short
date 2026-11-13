@@ -1,0 +1,32 @@
+{
+  "transcript": "../transcript.json",
+  "target_sec": [15, 60],
+  "pad": {"head": 0.10, "tail": 0.20},
+  "reframe": {"mode": "crop", "center_x": 0.5},
+  "keep_speakers": ["S1"],
+  "cuts": [
+    {"row": "R01", "from_word": 26, "to_word": 41, "note": "一番人気（言い直しの前半を削る）",
+     "question": "一番人気は\nどれですか？"},
+    {"row": "R02", "from_word": 52, "to_word": 69, "note": "味噌は自家製",
+     "question": "味噌が人気な\n理由は？", "zoom": 1.2, "center_y": 0.45},
+    {"row": "R02", "from_word": 70, "to_word": 77, "note": "香りが違う",
+     "question": "味噌が人気な\n理由は？", "zoom": 1.35, "center_y": 0.42},
+    {"row": "R03", "from_word": 89, "to_word": 105, "note": "麺は毎朝打つ",
+     "question": "他のこだわりは？", "zoom": 1.1,
+     "inserts": [{"clip": "../../insert.mp4", "from_word": 96, "to_word": 105, "in": 0.5}]},
+    {"row": "R03", "from_word": 106, "to_word": 114, "note": "のびないうちに出す", "zoom": 1.25},
+    {"row": "R04", "from_word": 126, "to_word": 138, "note": "初めての人へ",
+     "question": "初めて来る人へ", "subject": [0.30, 0.10, 0.70, 0.60]}
+  ],
+  "captions": [
+    {"from_word": 26, "to_word": 30, "text": "2種類あって"},
+    {"from_word": 31, "to_word": 41, "text": "味噌ラーメンと塩ラーメン"},
+    {"from_word": 52, "to_word": 58, "text": "味噌は自家製"},
+    {"from_word": 59, "to_word": 69, "text": "3年寝かせたものを使う"},
+    {"from_word": 70, "to_word": 77, "text": "香りが全然違う"},
+    {"from_word": 89, "to_word": 95, "text": "麺は毎朝打っています"},
+    {"from_word": 96, "to_word": 105, "text": "注文を受けてから茹でる"},
+    {"from_word": 106, "to_word": 114, "text": "のびないうちに出せる"},
+    {"from_word": 126, "to_word": 138, "text": "まずは味噌ラーメンを\n食べてみて"}
+  ]
+}

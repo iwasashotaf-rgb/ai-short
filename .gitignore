@@ -12,6 +12,10 @@ voices/
 **/_tmp/
 **/narration/
 test/work/shorts/*/
+test/ivwork/shorts/*/
+test/ivwork/transcript.json
+test/ivwork/transcript.txt
+test/ivwork/speakers.json
 test/work/xmlvariants/
 test/fish/
 test/narr/narration/
@@ -20,3 +24,8 @@ test/narr/narration/
 # テスト素材（test/make_test_media.sh で作る）
 test/talk.mp4
 test/talk.aiff
+
+# インタビューのテスト素材（test/make_interview_media.sh で作る）
+test/interview.mp4
+test/insert.mp4
+test/truth.txt

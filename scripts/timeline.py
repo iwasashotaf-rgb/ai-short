@@ -32,6 +32,30 @@ class EdlError(Exception):
     pass
 
 
+def clip_range(transcript, a, b, pad):
+    """単語番号 a〜b を残すときの、素材上のフレーム範囲（f0 以上 f1 未満）を返す。
+
+    Whisper の単語時刻は数百ms ずれることがあるので、近くに無音区間があれば
+    その終わりを発話の始まり、始まりを発話の終わりとみなす。
+    前後に pad の余白を付けるが、使わない隣の語には食い込ませない。
+    """
+    src = transcript["source"]
+    fps = src["fps"]
+    words = transcript["words"]
+    nw = len(words)
+    onset, offset = words[a]["start"], words[b]["end"]
+    for z in transcript.get("silences", []):
+        if words[a]["start"] - 1.0 <= z["end"] <= words[a]["start"] + 0.4:
+            onset = z["end"]
+        if words[b]["end"] - 0.4 <= z["start"] <= words[b]["end"] + 1.0:
+            offset = z["start"]
+    lo = words[a - 1]["end"] if a > 0 else 0.0
+    hi = words[b + 1]["start"] if b + 1 < nw else src["duration"]
+    t0 = max(onset - pad["head"], lo, 0.0)
+    t1 = min(offset + pad["tail"], hi, src["duration"])
+    return int(round(t0 * fps)), int(round(t1 * fps))
+
+
 def resolve(transcript, edl):
     """カット表を検証し、素材フレームと出力フレームの対応表を返す。
 
@@ -40,7 +64,6 @@ def resolve(transcript, edl):
     src = transcript["source"]
     fps = src["fps"]
     words = transcript["words"]
-    silences = transcript.get("silences", [])
     nw = len(words)
     pad = {"head": 0.10, "tail": 0.20, **edl.get("pad", {})}
     warnings = []
@@ -57,21 +80,7 @@ def resolve(transcript, edl):
             raise EdlError(f"clips[{k}] の単語番号が範囲外です: {a}-{b}（単語数 {nw}）")
         if a <= prev_to:
             raise EdlError(f"clips[{k}] が前のカットと重なっているか、時間順になっていません")
-        # Whisper の単語時刻は数百ms ずれることがあるので、近くに無音区間があれば
-        # その終わりを発話の始まり、始まりを発話の終わりとみなす
-        onset, offset = words[a]["start"], words[b]["end"]
-        for z in silences:
-            if words[a]["start"] - 1.0 <= z["end"] <= words[a]["start"] + 0.4:
-                onset = z["end"]
-            if words[b]["end"] - 0.4 <= z["start"] <= words[b]["end"] + 1.0:
-                offset = z["start"]
-        # 前後に余白を付けるが、使わない隣の語には食い込ませない
-        lo = words[a - 1]["end"] if a > 0 else 0.0
-        hi = words[b + 1]["start"] if b + 1 < nw else src["duration"]
-        t0 = max(onset - pad["head"], lo, 0.0)
-        t1 = min(offset + pad["tail"], hi, src["duration"])
-        f0 = int(round(t0 * fps))
-        f1 = int(round(t1 * fps))
+        f0, f1 = clip_range(transcript, a, b, pad)
         if f1 <= f0:
             raise EdlError(f"clips[{k}] の長さが0フレームです")
         clips.append({"i": k, "from_word": a, "to_word": b, "note": c.get("note", ""),
